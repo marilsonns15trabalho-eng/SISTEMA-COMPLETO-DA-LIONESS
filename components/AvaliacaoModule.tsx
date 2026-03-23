@@ -12,13 +12,28 @@ import {
   Calendar,
   User,
   Scale,
-  Ruler
+  Ruler,
+  TrendingUp,
+  BarChart as BarChartIcon,
+  Download
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import ChartWrapper from './ChartWrapper';
+import { 
+  LineChart, 
+  Line, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  BarChart,
+  Bar,
+  Cell
+} from 'recharts';
 
 interface Avaliacao {
   id: string;
-  aluno_id: string;
+  student_id: string;
   data: string;
   peso: number;
   altura: number;
@@ -38,21 +53,12 @@ interface Avaliacao {
   panturrilha_direita?: number;
   panturrilha_esquerda?: number;
 
-  // Dobras Cutâneas
+  // Dobras Cutâneas (4 dobras Faulkner)
   tricipital?: number;
   subescapular?: number;
-  peitoral?: number;
-  axilar_media?: number;
   supra_iliaca?: number;
   abdominal?: number;
-  coxa?: number;
-  panturrilha?: number;
 
-  // Dados de Saúde
-  pressao_arterial_sistolica?: number;
-  pressao_arterial_diastolica?: number;
-  frequencia_cardiaca_repouso?: number;
-  
   observacoes?: string;
   
   // Resultados (calculados)
@@ -60,9 +66,11 @@ interface Avaliacao {
   percentual_gordura?: number;
   massa_gorda?: number;
   massa_magra?: number;
+  soma_dobras?: number;
+  protocolo?: 'faulkner' | 'pollock7' | 'pollock3';
   
   created_at: string;
-  alunos?: { nome: string };
+  students?: { nome: string, sexo?: string, data_nascimento?: string };
 }
 
 export default function AvaliacaoModule() {
@@ -72,11 +80,18 @@ export default function AvaliacaoModule() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingAvaliacao, setEditingAvaliacao] = useState<Avaliacao | null>(null);
   const [newAvaliacao, setNewAvaliacao] = useState<Partial<Avaliacao>>({
-    aluno_id: '',
+    student_id: '',
     data: new Date().toISOString().split('T')[0],
+    protocolo: 'faulkner'
   });
-  const [alunosList, setAlunosList] = useState<{id: string, nome: string}[]>([]);
+  const [alunosList, setAlunosList] = useState<{id: string, nome: string, sexo?: string, data_nascimento?: string}[]>([]);
   
+  // Estado para o modal de relatório detalhado
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [selectedReport, setSelectedReport] = useState<Avaliacao | null>(null);
+  const [historicoAluno, setHistoricoAluno] = useState<Avaliacao[]>([]);
+  const [loadingHistorico, setLoadingHistorico] = useState(false);
+
   // Estados para o seletor de aluno no formulário
   const [alunoSearch, setAlunoSearch] = useState('');
   const [showAlunoDropdown, setShowAlunoDropdown] = useState(false);
@@ -86,76 +101,299 @@ export default function AvaliacaoModule() {
   const [filterDataInicio, setFilterDataInicio] = useState('');
   const [filterDataFim, setFilterDataFim] = useState('');
 
-  useEffect(() => {
-    const fetchAvaliacoes = async () => {
-      const { data, error } = await supabase
-        .from('avaliacoes')
-        .select(`
-          *,
-          alunos (
-            nome
-          )
-        `)
-        .order('data', { ascending: false });
+  const fetchAvaliacoes = async () => {
+    const { data, error } = await supabase
+      .from('avaliacoes')
+      .select(`
+        *,
+        students (
+          nome: name
+        )
+      `)
+      .order('data', { ascending: false });
 
+    if (error) {
+      console.error('Erro ao buscar avaliações:', error.message);
+    } else {
+      // Mapear dados JSONB de volta para o formato flat da UI
+      const flattenedData = (data || []).map((item: any) => {
+        const peso = item.peso || 0;
+        const massa_magra = item.massa_magra || 0;
+        const massa_gorda = parseFloat((peso - massa_magra).toFixed(2));
+        
+        return {
+          ...item,
+          ...item.medidas,
+          ...item.dobras,
+          percentual_gordura: item.gordura_corporal,
+          soma_dobras: item.dobras?.soma_dobras,
+          massa_gorda: massa_gorda
+        };
+      });
+      setAvaliacoes(flattenedData);
+    }
+    setLoading(false);
+  };
+
+  const fetchAlunosList = async () => {
+    try {
+      const { data, error } = await supabase.from('students').select('*').order('name', { ascending: true });
+      
       if (error) {
-        console.error('Erro ao buscar avaliações:', error);
+        console.warn('Erro ao buscar alunos por "name", tentando "nome":', error.message);
+        const { data: dataNome, error: errorNome } = await supabase.from('students').select('*').order('nome', { ascending: true });
+        if (errorNome) throw errorNome;
+        setAlunosList(dataNome?.map(a => ({ id: a.id, nome: a.nome || a.name, sexo: a.sexo, data_nascimento: a.data_nascimento })) || []);
       } else {
-        setAvaliacoes(data || []);
+        setAlunosList(data?.map(a => ({ id: a.id, nome: a.name || a.nome, sexo: a.sexo, data_nascimento: a.data_nascimento })) || []);
       }
-      setLoading(false);
-    };
+    } catch (err) {
+      console.error('Erro fatal ao buscar lista de alunos:', err);
+    }
+  };
 
-    const fetchAlunosList = async () => {
-      const { data } = await supabase.from('alunos').select('id, nome').order('nome');
-      setAlunosList(data || []);
-    };
-
+  useEffect(() => {
     fetchAvaliacoes();
     fetchAlunosList();
   }, []);
 
-  // Cálculos automáticos
+  // Cálculo automático de resultados (IMC, %Gordura, Massa Gorda, Massa Magra)
   useEffect(() => {
-    setNewAvaliacao(prev => {
-      const updates: Partial<Avaliacao> = {};
+    if (newAvaliacao.peso && newAvaliacao.altura) {
+      // Ajuste de altura se estiver em cm
+      const alturaMetros = newAvaliacao.altura > 3 ? newAvaliacao.altura / 100 : newAvaliacao.altura;
+      const imc = parseFloat((newAvaliacao.peso / (alturaMetros * alturaMetros)).toFixed(2));
       
-      // IMC
-      if (prev.peso && prev.altura && prev.altura > 0) {
-        const imc = prev.peso / (prev.altura * prev.altura);
-        updates.imc = parseFloat(imc.toFixed(2));
-      } else {
-        updates.imc = undefined;
+      let percentual_gordura = newAvaliacao.percentual_gordura || 0;
+      let soma_dobras = 0;
+      
+      // Se tiver as 4 dobras do Faulkner, calcula o %Gordura
+      if (newAvaliacao.protocolo === 'faulkner' && 
+          newAvaliacao.tricipital && 
+          newAvaliacao.subescapular && 
+          newAvaliacao.supra_iliaca && 
+          newAvaliacao.abdominal) {
+        soma_dobras = parseFloat((newAvaliacao.tricipital + newAvaliacao.subescapular + newAvaliacao.supra_iliaca + newAvaliacao.abdominal).toFixed(1));
+        percentual_gordura = parseFloat((soma_dobras * 0.153 + 5.783).toFixed(2));
       }
 
-      // Massa Gorda e Magra
-      if (prev.peso && prev.percentual_gordura !== undefined && !isNaN(prev.percentual_gordura)) {
-        const massaGorda = prev.peso * (prev.percentual_gordura / 100);
-        const massaMagra = prev.peso - massaGorda;
-        updates.massa_gorda = parseFloat(massaGorda.toFixed(2));
-        updates.massa_magra = parseFloat(massaMagra.toFixed(2));
-      } else {
-        updates.massa_gorda = undefined;
-        updates.massa_magra = undefined;
-      }
+      const massa_gorda = parseFloat((newAvaliacao.peso * (percentual_gordura / 100)).toFixed(2));
+      const massa_magra = parseFloat((newAvaliacao.peso - massa_gorda).toFixed(2));
 
-      // Só atualiza se houver mudanças para evitar loop infinito
-      if (
-        updates.imc !== prev.imc || 
-        updates.massa_gorda !== prev.massa_gorda || 
-        updates.massa_magra !== prev.massa_magra
-      ) {
-        return { ...prev, ...updates };
+      // Só atualiza se houver mudança real para evitar loops
+      if (imc !== newAvaliacao.imc || 
+          percentual_gordura !== newAvaliacao.percentual_gordura || 
+          massa_gorda !== newAvaliacao.massa_gorda || 
+          massa_magra !== newAvaliacao.massa_magra ||
+          soma_dobras !== newAvaliacao.soma_dobras) {
+        setNewAvaliacao(prev => ({
+          ...prev,
+          imc,
+          percentual_gordura,
+          massa_gorda,
+          massa_magra,
+          soma_dobras
+        }));
       }
-      
-      return prev;
+    }
+  }, [
+    newAvaliacao.peso, 
+    newAvaliacao.altura, 
+    newAvaliacao.tricipital, 
+    newAvaliacao.subescapular, 
+    newAvaliacao.supra_iliaca, 
+    newAvaliacao.abdominal,
+    newAvaliacao.protocolo,
+    newAvaliacao.imc,
+    newAvaliacao.percentual_gordura,
+    newAvaliacao.massa_gorda,
+    newAvaliacao.massa_magra,
+    newAvaliacao.soma_dobras
+  ]);
+
+  const handleViewReport = async (avaliacao: Avaliacao) => {
+    setSelectedReport(avaliacao);
+    setShowReportModal(true);
+    setLoadingHistorico(true);
+    
+    try {
+      const { data, error } = await supabase
+        .from('avaliacoes')
+        .select('*')
+        .eq('student_id', avaliacao.student_id)
+        .order('data', { ascending: true });
+        
+      if (error) throw error;
+
+      // Mapear dados JSONB de volta para o formato flat da UI para o histórico
+      const flattenedHistory = (data || []).map((item: any) => {
+        const peso = item.peso || 0;
+        const massa_magra = item.massa_magra || 0;
+        const massa_gorda = parseFloat((peso - massa_magra).toFixed(2));
+
+        return {
+          ...item,
+          ...item.medidas,
+          ...item.dobras,
+          percentual_gordura: item.gordura_corporal,
+          soma_dobras: item.dobras?.soma_dobras,
+          massa_gorda: massa_gorda
+        };
+      });
+
+      setHistoricoAluno(flattenedHistory);
+    } catch (error) {
+      console.error('Erro ao buscar histórico:', error);
+    } finally {
+      setLoadingHistorico(false);
+    }
+  };
+
+  const exportToPDF = async (avaliacao: Avaliacao) => {
+    const { default: jsPDF } = await import('jspdf');
+    const { default: autoTable } = await import('jspdf-autotable');
+
+    const doc = new jsPDF();
+    const pageWidth = doc.internal.pageSize.getWidth();
+
+    // Cabeçalho
+    doc.setFillColor(147, 51, 234); // Purple 600
+    doc.rect(0, 0, pageWidth, 40, 'F');
+    
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(22);
+    doc.text('RELATÓRIO DE AVALIAÇÃO FÍSICA', 15, 25);
+    
+    doc.setFontSize(10);
+    doc.text(`Data: ${new Date(avaliacao.data).toLocaleDateString('pt-BR')}`, 15, 33);
+
+    // Dados do Aluno
+    doc.setTextColor(0, 0, 0);
+    doc.setFontSize(14);
+    doc.text('Dados do Aluno', 15, 55);
+    doc.setDrawColor(147, 51, 234);
+    doc.line(15, 57, 60, 57);
+
+    doc.setFontSize(11);
+    doc.text(`Nome: ${avaliacao.students?.nome}`, 15, 65);
+    doc.text(`Peso: ${avaliacao.peso} kg`, 15, 72);
+    doc.text(`Altura: ${avaliacao.altura} m`, 15, 79);
+    doc.text(`IMC: ${avaliacao.imc}`, 15, 86);
+
+    // Composição Corporal
+    doc.setFontSize(14);
+    doc.text('Composição Corporal (Faulkner)', 110, 55);
+    doc.line(110, 57, 180, 57);
+
+    doc.setFontSize(11);
+    doc.text(`% Gordura: ${avaliacao.percentual_gordura}%`, 110, 65);
+    doc.text(`Massa Magra: ${avaliacao.massa_magra} kg`, 110, 72);
+    doc.text(`Massa Gorda: ${avaliacao.massa_gorda} kg`, 110, 79);
+
+    // Gráfico de Composição Corporal (Simples)
+    const chartX = 110;
+    const chartY = 85;
+    const chartWidth = 80;
+    const chartHeight = 15;
+    
+    // Fundo do gráfico
+    doc.setFillColor(240, 240, 240);
+    doc.rect(chartX, chartY, chartWidth, chartHeight, 'F');
+    
+    // Barra de Massa Magra
+    const pesoVal = avaliacao.peso || 1;
+    const magraVal = avaliacao.massa_magra || 0;
+    const gordaVal = avaliacao.massa_gorda || 0;
+
+    const magraWidth = Math.max(0, Math.min(chartWidth, (magraVal / pesoVal) * chartWidth));
+    const gordaWidth = Math.max(0, Math.min(chartWidth - magraWidth, (gordaVal / pesoVal) * chartWidth));
+
+    if (!isNaN(magraWidth) && magraWidth > 0) {
+      doc.setFillColor(16, 185, 129); // Emerald 500
+      doc.rect(chartX, chartY, magraWidth, chartHeight, 'F');
+    }
+    
+    if (!isNaN(gordaWidth) && gordaWidth > 0) {
+      doc.setFillColor(239, 68, 68); // Red 500
+      doc.rect(chartX + magraWidth, chartY, gordaWidth, chartHeight, 'F');
+    }
+    
+    doc.setFontSize(8);
+    doc.setTextColor(100);
+    doc.text('Verde: Massa Magra | Vermelho: Massa Gorda', chartX, chartY + chartHeight + 5);
+    doc.setTextColor(0, 0, 0);
+
+    // Tabela de Perímetros
+    doc.setFontSize(14);
+    doc.text('Perímetros (cm)', 15, 105);
+    
+    const perimetrosData = [
+      ['Ombro', avaliacao.ombro || '-'],
+      ['Tórax', avaliacao.torax || '-'],
+      ['Cintura', avaliacao.cintura || '-'],
+      ['Abdome', avaliacao.abdome || '-'],
+      ['Quadril', avaliacao.quadril || '-'],
+      ['Braço D/E', `${avaliacao.braco_direito || '-'} / ${avaliacao.braco_esquerdo || '-'}`],
+      ['Coxa D/E', `${avaliacao.coxa_direita || '-'} / ${avaliacao.coxa_esquerda || '-'}`],
+      ['Panturrilha D/E', `${avaliacao.panturrilha_direita || '-'} / ${avaliacao.panturrilha_esquerda || '-'}`],
+    ];
+
+    autoTable(doc, {
+      startY: 110,
+      head: [['Medida', 'Valor']],
+      body: perimetrosData,
+      theme: 'striped',
+      headStyles: { fillColor: [147, 51, 234] },
+      margin: { left: 15 },
+      tableWidth: 85
     });
-  }, [newAvaliacao.peso, newAvaliacao.altura, newAvaliacao.percentual_gordura]);
+
+    // Tabela de Dobras
+    doc.setFontSize(14);
+    doc.text('Dobras Cutâneas (mm)', 110, 105);
+
+    const dobrasData = [
+      ['Tricipital', avaliacao.tricipital || '-'],
+      ['Subescapular', avaliacao.subescapular || '-'],
+      ['Supra-ilíaca', avaliacao.supra_iliaca || '-'],
+      ['Abdominal', avaliacao.abdominal || '-'],
+    ];
+
+    autoTable(doc, {
+      startY: 110,
+      head: [['Dobra', 'Valor']],
+      body: dobrasData,
+      theme: 'striped',
+      headStyles: { fillColor: [147, 51, 234] },
+      margin: { left: 110 },
+      tableWidth: 85
+    });
+
+    // Observações
+    if (avaliacao.observacoes) {
+      const finalY = (doc as any).lastAutoTable.finalY + 15;
+      doc.setFontSize(14);
+      doc.text('Observações', 15, finalY);
+      doc.setFontSize(10);
+      doc.text(avaliacao.observacoes, 15, finalY + 7, { maxWidth: 180 });
+    }
+
+    // Rodapé
+    const pageCount = (doc as any).internal.getNumberOfPages();
+    for (let i = 1; i <= pageCount; i++) {
+      doc.setPage(i);
+      doc.setFontSize(8);
+      doc.setTextColor(150);
+      doc.text('Sistema de Gestão Fitness - Relatório Profissional', pageWidth / 2, doc.internal.pageSize.getHeight() - 10, { align: 'center' });
+    }
+
+    doc.save(`Avaliacao_${avaliacao.students?.nome}_${avaliacao.data}.pdf`);
+  };
 
   const handleEdit = (avaliacao: Avaliacao) => {
     setEditingAvaliacao(avaliacao);
     setNewAvaliacao(avaliacao);
-    setAlunoSearch(avaliacao.alunos?.nome || '');
+    setAlunoSearch(avaliacao.students?.name || '');
     setShowAddModal(true);
   };
 
@@ -163,43 +401,66 @@ export default function AvaliacaoModule() {
     e.preventDefault();
     const mockUserId = '00000000-0000-0000-0000-000000000000';
 
+    // Mapeamento para a estrutura JSONB do seu banco de dados
+    const payload = {
+      student_id: newAvaliacao.student_id,
+      data: newAvaliacao.data,
+      peso: newAvaliacao.peso,
+      altura: newAvaliacao.altura,
+      imc: newAvaliacao.imc,
+      gordura_corporal: newAvaliacao.percentual_gordura,
+      massa_magra: newAvaliacao.massa_magra,
+      medidas: {
+        ombro: newAvaliacao.ombro,
+        torax: newAvaliacao.torax,
+        cintura: newAvaliacao.cintura,
+        abdome: newAvaliacao.abdome,
+        quadril: newAvaliacao.quadril,
+        braco_direito: newAvaliacao.braco_direito,
+        braco_esquerdo: newAvaliacao.braco_esquerdo,
+        coxa_direita: newAvaliacao.coxa_direita,
+        coxa_esquerda: newAvaliacao.coxa_esquerda,
+        panturrilha_direita: newAvaliacao.panturrilha_direita,
+        panturrilha_esquerda: newAvaliacao.panturrilha_esquerda,
+      },
+      dobras: {
+        tricipital: newAvaliacao.tricipital,
+        subescapular: newAvaliacao.subescapular,
+        supra_iliaca: newAvaliacao.supra_iliaca,
+        abdominal: newAvaliacao.abdominal,
+        soma_dobras: newAvaliacao.soma_dobras,
+      }
+    };
+
     try {
       if (editingAvaliacao) {
-        // Editar
         const { error } = await supabase
           .from('avaliacoes')
-          .update({
-            ...newAvaliacao,
-            user_id: mockUserId
-          })
+          .update(payload)
           .eq('id', editingAvaliacao.id);
         if (error) throw error;
       } else {
-        // Adicionar
         const { error } = await supabase
           .from('avaliacoes')
-          .insert([{
-            ...newAvaliacao,
-            user_id: mockUserId
-          }]);
+          .insert([payload]);
         if (error) throw error;
       }
       
       setShowAddModal(false);
       setEditingAvaliacao(null);
-      setNewAvaliacao({ aluno_id: '', data: new Date().toISOString().split('T')[0] });
+      setNewAvaliacao({ student_id: '', data: new Date().toISOString().split('T')[0] });
       setAlunoSearch('');
       
-      const { data } = await supabase.from('avaliacoes').select(`*, alunos(nome)`).order('data', { ascending: false });
-      setAvaliacoes(data || []);
-    } catch (error) {
+      fetchAvaliacoes();
+    } catch (error: any) {
       console.error('Erro ao salvar avaliação:', error);
+      alert(`Erro ao salvar: ${error.message}`);
     }
   };
 
   // Filtros de visualização
   const filteredAvaliacoes = avaliacoes.filter(a => {
-    const matchAluno = filterAluno ? (a.alunos?.nome || '').toLowerCase().includes(filterAluno.toLowerCase()) : true;
+    const matchAluno = filterAluno ? (a.students?.name || '').toLowerCase().includes(filterAluno.toLowerCase()) : true;
     const matchInicio = filterDataInicio ? new Date(a.data) >= new Date(filterDataInicio) : true;
     const matchFim = filterDataFim ? new Date(a.data) <= new Date(filterDataFim) : true;
     return matchAluno && matchInicio && matchFim;
@@ -270,7 +531,7 @@ export default function AvaliacaoModule() {
                           <User size={18} />
                         </div>
                         <div>
-                          <p className="font-bold text-white group-hover:text-purple-400 transition-colors">{avaliacao.alunos?.nome}</p>
+                          <p className="font-bold text-white group-hover:text-purple-400 transition-colors">{avaliacao.students?.nome}</p>
                         </div>
                       </div>
                     </td>
@@ -300,13 +561,16 @@ export default function AvaliacaoModule() {
                     </td>
                     <td className="px-6 py-4 text-right">
                       <button 
+                        onClick={() => handleViewReport(avaliacao)}
+                        className="px-4 py-2 bg-purple-500/10 text-purple-500 hover:bg-purple-500 hover:text-white rounded-xl text-xs font-bold transition-all mr-2"
+                      >
+                        Ver Relatório
+                      </button>
+                      <button 
                         onClick={() => handleEdit(avaliacao)}
-                        className="px-4 py-2 bg-zinc-800 hover:bg-purple-500 hover:text-white rounded-xl text-xs font-bold transition-all mr-2"
+                        className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-xl text-xs font-bold transition-all mr-2"
                       >
                         Editar
-                      </button>
-                      <button className="p-2 text-zinc-500 hover:text-white transition-colors">
-                        <MoreVertical size={20} />
                       </button>
                     </td>
                   </tr>
@@ -326,6 +590,192 @@ export default function AvaliacaoModule() {
       </div>
 
       <AnimatePresence>
+        {showReportModal && selectedReport && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              onClick={() => setShowReportModal(false)}
+              className="absolute inset-0 bg-black/90 backdrop-blur-md"
+            />
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }}
+              className="relative bg-zinc-900 border border-zinc-800 rounded-3xl p-8 w-full max-w-5xl shadow-2xl max-h-[90vh] overflow-y-auto"
+            >
+              <div className="flex justify-between items-start mb-8">
+                <div>
+                  <h3 className="text-3xl font-bold text-white">{selectedReport.students?.nome}</h3>
+                  <p className="text-zinc-500">Relatório de Avaliação Física - {new Date(selectedReport.data).toLocaleDateString('pt-BR')}</p>
+                </div>
+                <div className="flex gap-3">
+                  <button 
+                    onClick={() => exportToPDF(selectedReport)}
+                    className="bg-purple-500 hover:bg-purple-600 text-white px-6 py-2 rounded-xl font-bold transition-all flex items-center gap-2"
+                  >
+                    Exportar PDF
+                  </button>
+                  <button onClick={() => setShowReportModal(false)} className="text-zinc-500 hover:text-white p-2">
+                    <Plus className="rotate-45" size={24} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                <div className="bg-black/40 border border-zinc-800 p-6 rounded-2xl text-center relative group">
+                  <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-2">Percentual de Gordura</p>
+                  <p className="text-4xl font-black text-purple-500">{selectedReport.percentual_gordura || 0}%</p>
+                  <p className="text-xs text-zinc-600 mt-2">Protocolo Faulkner</p>
+                  {historicoAluno.length > 1 && historicoAluno.findIndex(a => a.id === selectedReport.id) > 0 && (
+                    (() => {
+                      const currentIndex = historicoAluno.findIndex(a => a.id === selectedReport.id);
+                      const prevEval = historicoAluno[currentIndex - 1];
+                      if (!prevEval || prevEval.percentual_gordura === undefined) return null;
+                      const diff = selectedReport.percentual_gordura! - prevEval.percentual_gordura!;
+                      return (
+                        <div className={`absolute top-4 right-4 text-xs font-bold flex items-center gap-1 ${
+                          diff < 0 ? 'text-emerald-500' : 'text-rose-500'
+                        }`}>
+                          {diff < 0 ? '↓' : '↑'}
+                          {Math.abs(diff).toFixed(1)}%
+                        </div>
+                      );
+                    })()
+                  )}
+                </div>
+                <div className="bg-black/40 border border-zinc-800 p-6 rounded-2xl text-center relative">
+                  <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-2">Massa Magra</p>
+                  <p className="text-4xl font-black text-emerald-500">{selectedReport.massa_magra || 0} kg</p>
+                  {historicoAluno.length > 1 && historicoAluno.findIndex(a => a.id === selectedReport.id) > 0 && (
+                    (() => {
+                      const currentIndex = historicoAluno.findIndex(a => a.id === selectedReport.id);
+                      const prevEval = historicoAluno[currentIndex - 1];
+                      if (!prevEval || prevEval.massa_magra === undefined) return null;
+                      const diff = selectedReport.massa_magra! - prevEval.massa_magra!;
+                      return (
+                        <div className={`absolute top-4 right-4 text-xs font-bold flex items-center gap-1 ${
+                          diff > 0 ? 'text-emerald-500' : 'text-rose-500'
+                        }`}>
+                          {diff > 0 ? '↑' : '↓'}
+                          {Math.abs(diff).toFixed(1)}kg
+                        </div>
+                      );
+                    })()
+                  )}
+                </div>
+                <div className="bg-black/40 border border-zinc-800 p-6 rounded-2xl text-center relative">
+                  <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-2">Massa Gorda</p>
+                  <p className="text-4xl font-black text-red-500">{selectedReport.massa_gorda || 0} kg</p>
+                  {historicoAluno.length > 1 && historicoAluno.findIndex(a => a.id === selectedReport.id) > 0 && (
+                    (() => {
+                      const currentIndex = historicoAluno.findIndex(a => a.id === selectedReport.id);
+                      const prevEval = historicoAluno[currentIndex - 1];
+                      if (!prevEval || prevEval.massa_gorda === undefined) return null;
+                      const diff = selectedReport.massa_gorda! - prevEval.massa_gorda!;
+                      return (
+                        <div className={`absolute top-4 right-4 text-xs font-bold flex items-center gap-1 ${
+                          diff < 0 ? 'text-emerald-500' : 'text-rose-500'
+                        }`}>
+                          {diff < 0 ? '↓' : '↑'}
+                          {Math.abs(diff).toFixed(1)}kg
+                        </div>
+                      );
+                    })()
+                  )}
+                </div>
+              </div>
+
+              {/* Dashboard de Evolução */}
+              <div className="mb-12 space-y-6">
+                <div className="flex items-center gap-2 mb-4">
+                  <TrendingUp className="text-purple-500" />
+                  <h4 className="text-xl font-bold">Dashboard de Evolução</h4>
+                </div>
+                
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  <div className="bg-black/40 border border-zinc-800 p-6 rounded-3xl h-[300px] relative">
+                    <p className="text-sm font-bold text-zinc-500 mb-6 uppercase tracking-widest">Evolução do Peso (kg)</p>
+                    <ChartWrapper minHeight={200}>
+                      <LineChart data={historicoAluno}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
+                        <XAxis 
+                          dataKey="data" 
+                          stroke="#71717a" 
+                          fontSize={10} 
+                          tickFormatter={(val) => new Date(val).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}
+                        />
+                        <YAxis stroke="#71717a" fontSize={10} domain={['auto', 'auto']} />
+                        <Tooltip 
+                          contentStyle={{ backgroundColor: '#18181b', border: '1px solid #27272a', borderRadius: '12px' }}
+                          labelStyle={{ color: '#a1a1aa', fontWeight: 'bold' }}
+                          labelFormatter={(val) => new Date(val).toLocaleDateString('pt-BR')}
+                        />
+                        <Line type="monotone" dataKey="peso" stroke="#a855f7" strokeWidth={3} dot={{ fill: '#a855f7', r: 4 }} activeDot={{ r: 6 }} />
+                      </LineChart>
+                    </ChartWrapper>
+                  </div>
+
+                  <div className="bg-black/40 border border-zinc-800 p-6 rounded-3xl h-[300px] relative">
+                    <p className="text-sm font-bold text-zinc-500 mb-6 uppercase tracking-widest">Evolução do BF (%)</p>
+                    <ChartWrapper minHeight={200}>
+                      <LineChart data={historicoAluno}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
+                        <XAxis 
+                          dataKey="data" 
+                          stroke="#71717a" 
+                          fontSize={10} 
+                          tickFormatter={(val) => new Date(val).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}
+                        />
+                        <YAxis stroke="#71717a" fontSize={10} domain={[0, 'auto']} />
+                        <Tooltip 
+                          contentStyle={{ backgroundColor: '#18181b', border: '1px solid #27272a', borderRadius: '12px' }}
+                          labelStyle={{ color: '#a1a1aa', fontWeight: 'bold' }}
+                          labelFormatter={(val) => new Date(val).toLocaleDateString('pt-BR')}
+                        />
+                        <Line type="monotone" dataKey="percentual_gordura" stroke="#ec4899" strokeWidth={3} dot={{ fill: '#ec4899', r: 4 }} activeDot={{ r: 6 }} />
+                      </LineChart>
+                    </ChartWrapper>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div className="space-y-6">
+                  <h4 className="text-xl font-bold border-b border-zinc-800 pb-2">Perímetros</h4>
+                  <div className="grid grid-cols-2 gap-y-3">
+                    <div className="flex justify-between pr-4 border-r border-zinc-800"><span className="text-zinc-500">Ombro:</span> <span className="font-bold">{selectedReport.ombro || '-'} cm</span></div>
+                    <div className="flex justify-between pl-4"><span className="text-zinc-500">Tórax:</span> <span className="font-bold">{selectedReport.torax || '-'} cm</span></div>
+                    <div className="flex justify-between pr-4 border-r border-zinc-800"><span className="text-zinc-500">Cintura:</span> <span className="font-bold">{selectedReport.cintura || '-'} cm</span></div>
+                    <div className="flex justify-between pl-4"><span className="text-zinc-500">Abdome:</span> <span className="font-bold">{selectedReport.abdome || '-'} cm</span></div>
+                    <div className="flex justify-between pr-4 border-r border-zinc-800"><span className="text-zinc-500">Quadril:</span> <span className="font-bold">{selectedReport.quadril || '-'} cm</span></div>
+                    <div className="flex justify-between pl-4"><span className="text-zinc-500">Braço D:</span> <span className="font-bold">{selectedReport.braco_direito || '-'} cm</span></div>
+                    <div className="flex justify-between pr-4 border-r border-zinc-800"><span className="text-zinc-500">Braço E:</span> <span className="font-bold">{selectedReport.braco_esquerdo || '-'} cm</span></div>
+                    <div className="flex justify-between pl-4"><span className="text-zinc-500">Coxa D:</span> <span className="font-bold">{selectedReport.coxa_direita || '-'} cm</span></div>
+                  </div>
+                </div>
+                <div className="space-y-6">
+                  <h4 className="text-xl font-bold border-b border-zinc-800 pb-2">Dobras Cutâneas</h4>
+                  <div className="grid grid-cols-2 gap-y-3">
+                    <div className="flex justify-between pr-4 border-r border-zinc-800"><span className="text-zinc-500">Tricipital:</span> <span className="font-bold">{selectedReport.tricipital || '-'} mm</span></div>
+                    <div className="flex justify-between pl-4"><span className="text-zinc-500">Subescapular:</span> <span className="font-bold">{selectedReport.subescapular || '-'} mm</span></div>
+                    <div className="flex justify-between pr-4 border-r border-zinc-800"><span className="text-zinc-500">Peitoral:</span> <span className="font-bold">{selectedReport.peitoral || '-'} mm</span></div>
+                    <div className="flex justify-between pl-4"><span className="text-zinc-500">Axilar Média:</span> <span className="font-bold">{selectedReport.axilar_media || '-'} mm</span></div>
+                    <div className="flex justify-between pr-4 border-r border-zinc-800"><span className="text-zinc-500">Supra-ilíaca:</span> <span className="font-bold">{selectedReport.supra_iliaca || '-'} mm</span></div>
+                    <div className="flex justify-between pl-4"><span className="text-zinc-500">Abdominal:</span> <span className="font-bold">{selectedReport.abdominal || '-'} mm</span></div>
+                    <div className="flex justify-between pr-4 border-r border-zinc-800"><span className="text-zinc-500">Coxa:</span> <span className="font-bold">{selectedReport.coxa || '-'} mm</span></div>
+                    <div className="flex justify-between pl-4"><span className="text-zinc-500">Panturrilha:</span> <span className="font-bold">{selectedReport.panturrilha || '-'} mm</span></div>
+                  </div>
+                </div>
+              </div>
+
+              {selectedReport.observacoes && (
+                <div className="mt-8 p-6 bg-black/20 border border-zinc-800 rounded-2xl">
+                  <h4 className="text-sm font-bold text-zinc-500 uppercase tracking-widest mb-2">Observações</h4>
+                  <p className="text-zinc-300 italic">{selectedReport.observacoes}</p>
+                </div>
+              )}
+            </motion.div>
+          </div>
+        )}
+
         {showAddModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <motion.div 
@@ -340,7 +790,7 @@ export default function AvaliacaoModule() {
               <h3 className="text-2xl font-bold mb-6">Nova Avaliação</h3>
               <form onSubmit={handleAdd} className="space-y-6">
                 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div className="space-y-1.5 relative">
                     <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Aluno *</label>
                       <input 
@@ -355,21 +805,14 @@ export default function AvaliacaoModule() {
                         className="w-full bg-black border border-zinc-800 rounded-xl py-3 px-4 text-white focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 outline-none transition-all" 
                         placeholder="Digite ou selecione o aluno..."
                       />
-                      <button 
-                        type="button"
-                        onClick={() => setShowAlunoDropdown(!showAlunoDropdown)}
-                        className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-zinc-500 hover:text-purple-500"
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-                      </button>
                       {showAlunoDropdown && (
-                        <div className="absolute z-10 w-full bg-zinc-900 border border-zinc-800 rounded-xl mt-1 max-h-48 overflow-y-auto shadow-2xl">
+                        <div className="absolute z-20 w-full bg-zinc-900 border border-zinc-800 rounded-xl mt-1 max-h-48 overflow-y-auto shadow-2xl">
                           {filteredAlunosList.length > 0 ? (
                             filteredAlunosList.map(aluno => (
                               <div 
                                 key={aluno.id}
                                 onClick={() => {
-                                  setNewAvaliacao({...newAvaliacao, aluno_id: aluno.id});
+                                  setNewAvaliacao({...newAvaliacao, student_id: aluno.id});
                                   setAlunoSearch(aluno.nome);
                                   setShowAlunoDropdown(false);
                                 }}
@@ -388,6 +831,20 @@ export default function AvaliacaoModule() {
                     <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Data da Avaliação *</label>
                     <input required type="date" value={newAvaliacao.data || ''} onChange={(e) => setNewAvaliacao({...newAvaliacao, data: e.target.value})} className="w-full bg-black border border-zinc-800 rounded-xl py-3 px-4 text-white focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 outline-none transition-all [color-scheme:dark]" />
                   </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Protocolo</label>
+                    <select 
+                      value={newAvaliacao.protocolo} 
+                      onChange={(e) => setNewAvaliacao({...newAvaliacao, protocolo: e.target.value as any})}
+                      className="w-full bg-black border border-zinc-800 rounded-xl py-3 px-4 text-white focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 outline-none transition-all"
+                    >
+                      <option value="faulkner">Faulkner (4 Dobras)</option>
+                      <option value="pollock7">Pollock (7 Dobras) - Em breve</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-1.5">
                     <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Peso (kg) *</label>
                     <input required type="number" step="0.1" value={newAvaliacao.peso || ''} onChange={(e) => setNewAvaliacao({...newAvaliacao, peso: parseFloat(e.target.value)})} className="w-full bg-black border border-zinc-800 rounded-xl py-3 px-4 text-white focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 outline-none transition-all" placeholder="75.5" />
@@ -460,14 +917,6 @@ export default function AvaliacaoModule() {
                       <input type="number" step="0.1" value={newAvaliacao.subescapular || ''} onChange={(e) => setNewAvaliacao({...newAvaliacao, subescapular: parseFloat(e.target.value)})} className="w-full bg-black border border-zinc-800 rounded-xl py-2 px-3 text-white focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 outline-none transition-all" />
                     </div>
                     <div className="space-y-1.5">
-                      <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Peitoral</label>
-                      <input type="number" step="0.1" value={newAvaliacao.peitoral || ''} onChange={(e) => setNewAvaliacao({...newAvaliacao, peitoral: parseFloat(e.target.value)})} className="w-full bg-black border border-zinc-800 rounded-xl py-2 px-3 text-white focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 outline-none transition-all" />
-                    </div>
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Axilar Média</label>
-                      <input type="number" step="0.1" value={newAvaliacao.axilar_media || ''} onChange={(e) => setNewAvaliacao({...newAvaliacao, axilar_media: parseFloat(e.target.value)})} className="w-full bg-black border border-zinc-800 rounded-xl py-2 px-3 text-white focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 outline-none transition-all" />
-                    </div>
-                    <div className="space-y-1.5">
                       <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Supra-ilíaca</label>
                       <input type="number" step="0.1" value={newAvaliacao.supra_iliaca || ''} onChange={(e) => setNewAvaliacao({...newAvaliacao, supra_iliaca: parseFloat(e.target.value)})} className="w-full bg-black border border-zinc-800 rounded-xl py-2 px-3 text-white focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 outline-none transition-all" />
                     </div>
@@ -475,39 +924,23 @@ export default function AvaliacaoModule() {
                       <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Abdominal</label>
                       <input type="number" step="0.1" value={newAvaliacao.abdominal || ''} onChange={(e) => setNewAvaliacao({...newAvaliacao, abdominal: parseFloat(e.target.value)})} className="w-full bg-black border border-zinc-800 rounded-xl py-2 px-3 text-white focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 outline-none transition-all" />
                     </div>
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Coxa</label>
-                      <input type="number" step="0.1" value={newAvaliacao.coxa || ''} onChange={(e) => setNewAvaliacao({...newAvaliacao, coxa: parseFloat(e.target.value)})} className="w-full bg-black border border-zinc-800 rounded-xl py-2 px-3 text-white focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 outline-none transition-all" />
-                    </div>
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Panturrilha</label>
-                      <input type="number" step="0.1" value={newAvaliacao.panturrilha || ''} onChange={(e) => setNewAvaliacao({...newAvaliacao, panturrilha: parseFloat(e.target.value)})} className="w-full bg-black border border-zinc-800 rounded-xl py-2 px-3 text-white focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 outline-none transition-all" />
-                    </div>
                   </div>
                 </div>
 
                 <div className="border-t border-zinc-800 pt-4">
-                  <h4 className="text-lg font-bold mb-4 text-purple-500">Dados de Saúde e Resultados</h4>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <h4 className="text-lg font-bold mb-4 text-purple-500">Resultados</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
                     <div className="space-y-1.5">
-                      <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">PA Sistólica</label>
-                      <input type="number" value={newAvaliacao.pressao_arterial_sistolica || ''} onChange={(e) => setNewAvaliacao({...newAvaliacao, pressao_arterial_sistolica: parseFloat(e.target.value)})} className="w-full bg-black border border-zinc-800 rounded-xl py-2 px-3 text-white focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 outline-none transition-all" />
-                    </div>
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">PA Diastólica</label>
-                      <input type="number" value={newAvaliacao.pressao_arterial_diastolica || ''} onChange={(e) => setNewAvaliacao({...newAvaliacao, pressao_arterial_diastolica: parseFloat(e.target.value)})} className="w-full bg-black border border-zinc-800 rounded-xl py-2 px-3 text-white focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 outline-none transition-all" />
-                    </div>
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">FC Repouso (bpm)</label>
-                      <input type="number" value={newAvaliacao.frequencia_cardiaca_repouso || ''} onChange={(e) => setNewAvaliacao({...newAvaliacao, frequencia_cardiaca_repouso: parseFloat(e.target.value)})} className="w-full bg-black border border-zinc-800 rounded-xl py-2 px-3 text-white focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 outline-none transition-all" />
-                    </div>
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">% Gordura (BF)</label>
-                      <input type="number" step="0.1" value={newAvaliacao.percentual_gordura || ''} onChange={(e) => setNewAvaliacao({...newAvaliacao, percentual_gordura: parseFloat(e.target.value)})} className="w-full bg-black border border-zinc-800 rounded-xl py-2 px-3 text-white focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 outline-none transition-all" />
+                      <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Soma Dobras</label>
+                      <input type="number" readOnly value={newAvaliacao.soma_dobras || ''} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl py-2 px-3 text-zinc-400 cursor-not-allowed outline-none" placeholder="0.0" />
                     </div>
                     <div className="space-y-1.5">
                       <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">IMC</label>
                       <input type="number" readOnly value={newAvaliacao.imc || ''} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl py-2 px-3 text-zinc-400 cursor-not-allowed outline-none" placeholder="Calculado auto." />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">% Gordura (BF)</label>
+                      <input type="number" step="0.1" value={newAvaliacao.percentual_gordura || ''} onChange={(e) => setNewAvaliacao({...newAvaliacao, percentual_gordura: parseFloat(e.target.value)})} className="w-full bg-black border border-zinc-800 rounded-xl py-2 px-3 text-white focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 outline-none transition-all" />
                     </div>
                     <div className="space-y-1.5">
                       <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Massa Gorda (kg)</label>

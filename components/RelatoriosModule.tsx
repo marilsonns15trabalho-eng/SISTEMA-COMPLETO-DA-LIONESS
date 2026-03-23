@@ -9,12 +9,14 @@ import {
   DollarSign,
   FileText,
   Activity,
-  Loader2
+  Loader2,
+  Download
 } from 'lucide-react';
 import { motion } from 'motion/react';
 
 export default function RelatoriosModule() {
   const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
   const [metrics, setMetrics] = useState({
     receitas: 0,
     despesas: 0,
@@ -28,66 +30,112 @@ export default function RelatoriosModule() {
     avaliacoesPendentes: 0
   });
 
+  const fetchMetrics = async () => {
+    setLoading(true);
+    try {
+      // Buscar alunos
+      const { data: alunos } = await supabase.from('students').select('*');
+      const totalAlunos = alunos?.length || 0;
+      const alunosAtivos = alunos?.filter(a => a.status === 'ativo').length || 0;
+      const alunosInativos = totalAlunos - alunosAtivos;
+      
+      // Novos alunos no mês atual
+      const now = new Date();
+      const currentMonth = now.getMonth();
+      const currentYear = now.getFullYear();
+      
+      const novosAlunos = alunos?.filter(a => {
+        const d = new Date(a.created_at);
+        return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
+      }).length || 0;
+
+      // Buscar financeiro
+      const { data: financeiro } = await supabase.from('financeiro').select('*');
+      
+      const receitasMes = financeiro?.filter(p => {
+        const d = new Date(p.data_vencimento);
+        return d.getMonth() === currentMonth && d.getFullYear() === currentYear && p.tipo === 'receita' && p.status === 'pago';
+      }) || [];
+
+      const despesasMes = financeiro?.filter(p => {
+        const d = new Date(p.data_vencimento);
+        return d.getMonth() === currentMonth && d.getFullYear() === currentYear && p.tipo === 'despesa' && p.status === 'pago';
+      }) || [];
+      
+      const receitas = receitasMes.reduce((acc, curr) => acc + (curr.valor || 0), 0);
+      const despesas = despesasMes.reduce((acc, curr) => acc + (curr.valor || 0), 0);
+
+      // Inadimplentes (Boletos vencidos)
+      const { count: inadimplentes } = await supabase
+        .from('bills')
+        .select('*', { count: 'exact', head: true })
+        .eq('status', 'late');
+
+      setMetrics({
+        receitas,
+        despesas,
+        saldo: receitas - despesas,
+        inadimplentes: inadimplentes || 0,
+        totalAlunos,
+        alunosAtivos,
+        alunosInativos,
+        novosAlunos,
+        anamnesesPendentes: 0,
+        avaliacoesPendentes: 0
+      });
+    } catch (error) {
+      console.error('Erro ao buscar métricas:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    const fetchMetrics = async () => {
-      try {
-        // Buscar alunos
-        const { data: alunos } = await supabase.from('alunos').select('*');
-        const totalAlunos = alunos?.length || 0;
-        const alunosAtivos = alunos?.filter(a => a.status === 'ativo').length || 0;
-        const alunosInativos = totalAlunos - alunosAtivos;
-        
-        // Novos alunos no mês atual
-        const currentMonth = new Date().getMonth();
-        const currentYear = new Date().getFullYear();
-        const novosAlunos = alunos?.filter(a => {
-          const d = new Date(a.created_at);
-          return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
-        }).length || 0;
-
-        // Buscar pagamentos
-        const { data: pagamentos } = await supabase.from('pagamentos').select('*');
-        const pagamentosMes = pagamentos?.filter(p => {
-          const d = new Date(p.data_pagamento);
-          return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
-        }) || [];
-        
-        const receitas = pagamentosMes
-          .filter(p => p.status === 'pago')
-          .reduce((acc, curr) => acc + (curr.valor || 0), 0);
-          
-        const inadimplentes = pagamentos?.filter(p => p.status === 'vencido').length || 0;
-
-        // Buscar despesas
-        const { data: despesas } = await supabase.from('despesas').select('*');
-        const despesasMes = despesas?.filter(d => {
-          const date = new Date(d.data_despesa);
-          return date.getMonth() === currentMonth && date.getFullYear() === currentYear;
-        }) || [];
-        
-        const totalDespesas = despesasMes.reduce((acc, curr) => acc + (curr.valor || 0), 0);
-
-        setMetrics({
-          receitas,
-          despesas: totalDespesas,
-          saldo: receitas - totalDespesas,
-          inadimplentes,
-          totalAlunos,
-          alunosAtivos,
-          alunosInativos,
-          novosAlunos,
-          anamnesesPendentes: 0, // Implementar lógica real se necessário
-          avaliacoesPendentes: 0 // Implementar lógica real se necessário
-        });
-      } catch (error) {
-        console.error('Erro ao buscar métricas:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
     fetchMetrics();
   }, []);
+
+  const exportToCSV = async () => {
+    setExporting(true);
+    try {
+      const { data: financeiro } = await supabase
+        .from('financeiro')
+        .select('*')
+        .order('data_vencimento', { ascending: false });
+
+      if (!financeiro || financeiro.length === 0) {
+        alert('Não há dados para exportar.');
+        return;
+      }
+
+      const headers = ['Descrição', 'Valor', 'Data', 'Tipo', 'Status'];
+      const rows = financeiro.map(item => [
+        item.descricao,
+        item.valor.toString(),
+        item.data_vencimento,
+        item.tipo,
+        item.status
+      ]);
+
+      const csvContent = [
+        headers.join(','),
+        ...rows.map(r => r.join(','))
+      ].join('\n');
+
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      link.setAttribute('download', `relatorio_financeiro_${new Date().toISOString().split('T')[0]}.csv`);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (error) {
+      console.error('Erro ao exportar CSV:', error);
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const formatCurrency = (value: number) => {
     return new Intl.NumberFormat('pt-BR', {
@@ -111,6 +159,14 @@ export default function RelatoriosModule() {
           <h2 className="text-3xl font-bold tracking-tight">Relatórios Mensais</h2>
           <p className="text-zinc-500">Acompanhe as métricas e o desempenho do seu estúdio.</p>
         </div>
+        <button 
+          onClick={exportToCSV}
+          disabled={exporting}
+          className="flex items-center gap-2 bg-emerald-500 hover:bg-emerald-600 text-black font-bold px-6 py-3 rounded-2xl transition-all disabled:opacity-50"
+        >
+          {exporting ? <Loader2 className="animate-spin" size={20} /> : <Download size={20} />}
+          Exportar CSV
+        </button>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">

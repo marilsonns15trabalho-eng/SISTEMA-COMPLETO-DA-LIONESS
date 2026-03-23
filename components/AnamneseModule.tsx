@@ -23,8 +23,8 @@ interface Aluno {
 
 interface Anamnese {
   id: string;
-  aluno_id: string;
-  data_anamnese: string;
+  student_id: string;
+  data: string;
   peso?: number;
   altura?: number;
   objetivo_nutricional?: string;
@@ -76,7 +76,7 @@ interface Anamnese {
   preferencia_dietas?: string;
   expectativas?: string;
   created_at: string;
-  aluno?: Aluno;
+  students?: Aluno;
 }
 
 export default function AnamneseModule() {
@@ -87,33 +87,53 @@ export default function AnamneseModule() {
   const [showAddModal, setShowAddModal] = useState(false);
   
   const [newAnamnese, setNewAnamnese] = useState<Partial<Anamnese>>({
-    data_anamnese: new Date().toISOString().split('T')[0],
+    data: new Date().toISOString().split('T')[0],
   });
 
   useEffect(() => {
     const fetchData = async () => {
-      // Buscar alunos para o select
-      const { data: alunosData } = await supabase
-        .from('alunos')
-        .select('id, nome')
-        .order('nome');
-      
-      if (alunosData) setAlunos(alunosData);
+      try {
+        // Buscar alunos para o select
+        const { data: studentsData, error: studentsError } = await supabase
+          .from('students')
+          .select('*')
+          .order('name', { ascending: true });
+        
+        if (studentsError) {
+          console.warn('Erro ao buscar alunos por "name", tentando "nome":', studentsError.message);
+          const { data: dataNome, error: errorNome } = await supabase.from('students').select('*').order('nome', { ascending: true });
+          if (errorNome) throw errorNome;
+          setAlunos(dataNome?.map(s => ({ id: s.id, nome: s.nome || s.name })) || []);
+        } else {
+          setAlunos(studentsData?.map(s => ({ id: s.id, nome: s.nome || s.name })) || []);
+        }
 
-      // Buscar anamneses
-      const { data: anamnesesData, error } = await supabase
-        .from('anamneses')
-        .select(`
-          *,
-          aluno:alunos(id, nome)
-        `)
-        .order('data_anamnese', { ascending: false });
+        // Buscar anamneses
+        const { data: anamnesesData, error } = await supabase
+          .from('anamneses')
+          .select(`
+            *,
+            students:students(id, nome:name)
+          `)
+          .order('data', { ascending: false });
 
-      if (error) {
-        console.error('Erro ao buscar anamneses:', error);
-        // Se a tabela não existir, não quebra a tela, apenas mostra vazio
-      } else {
-        setAnamneses(anamnesesData || []);
+        if (error) {
+          console.warn('Erro ao buscar anamneses com join "students", tentando sem join:', error.message);
+          const { data: dataNoJoin, error: errorNoJoin } = await supabase
+            .from('anamneses')
+            .select('*')
+            .order('data', { ascending: false });
+            
+          if (errorNoJoin) {
+            console.error('Erro ao buscar anamneses (sem join):', errorNoJoin.message);
+          } else {
+            setAnamneses(dataNoJoin || []);
+          }
+        } else {
+          setAnamneses(anamnesesData?.map(a => ({ ...a, students: a.students })) || []);
+        }
+      } catch (err) {
+        console.error('Erro fatal ao buscar dados de anamnese:', err);
       }
       
       setLoading(false);
@@ -133,13 +153,13 @@ export default function AnamneseModule() {
       if (error) throw error;
       
       setShowAddModal(false);
-      setNewAnamnese({ data_anamnese: new Date().toISOString().split('T')[0] });
+      setNewAnamnese({ data: new Date().toISOString().split('T')[0] });
       
       // Recarregar dados
       const { data } = await supabase
         .from('anamneses')
-        .select('*, aluno:alunos(id, nome)')
-        .order('data_anamnese', { ascending: false });
+        .select('*, students:students(id, nome:name)')
+        .order('data', { ascending: false });
       if (data) setAnamneses(data);
       
     } catch (error) {
@@ -149,8 +169,113 @@ export default function AnamneseModule() {
   };
 
   const filteredAnamneses = anamneses.filter(a => 
-    (a.aluno?.nome || '').toLowerCase().includes((searchTerm || '').toLowerCase())
+    (a.students?.nome || '').toLowerCase().includes((searchTerm || '').toLowerCase())
   );
+
+  const [showViewModal, setShowViewModal] = useState(false);
+  const [selectedAnamnese, setSelectedAnamnese] = useState<Anamnese | null>(null);
+
+  const handleViewAnamnese = (anamnese: Anamnese) => {
+    setSelectedAnamnese(anamnese);
+    setShowViewModal(true);
+  };
+
+  const exportToPDF = async (anamnese: Anamnese) => {
+    const { default: jsPDF } = await import('jspdf');
+    const { default: autoTable } = await import('jspdf-autotable');
+
+    const doc = new jsPDF();
+    const date = new Date().toLocaleDateString('pt-BR');
+
+    // Cabeçalho
+    doc.setFillColor(249, 115, 22); // Laranja (Orange-500)
+    doc.rect(0, 0, 210, 40, 'F');
+    
+    doc.setTextColor(0, 0, 0);
+    doc.setFontSize(22);
+    doc.setFont('helvetica', 'bold');
+    doc.text('ANAMNESE NUTRICIONAL', 105, 20, { align: 'center' });
+    
+    doc.setFontSize(10);
+    doc.text(`Gerado em: ${date}`, 105, 30, { align: 'center' });
+
+    // Informações do Aluno
+    doc.setTextColor(0, 0, 0);
+    doc.setFontSize(14);
+    doc.text('Informações do Aluno', 14, 50);
+    
+    doc.setFontSize(11);
+    doc.setFont('helvetica', 'normal');
+    doc.text(`Aluno: ${anamnese.students?.nome || 'Não informado'}`, 14, 60);
+    doc.text(`Data: ${new Date(anamnese.data).toLocaleDateString('pt-BR')}`, 14, 67);
+    doc.text(`Objetivo: ${anamnese.objetivo_nutricional || 'Não informado'}`, 14, 74);
+
+    // Seções de Dados
+    let currentY = 85;
+
+    const addSection = (title: string, data: [string, string][]) => {
+      if (currentY > 250) {
+        doc.addPage();
+        currentY = 20;
+      }
+      
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(12);
+      doc.text(title, 14, currentY);
+      currentY += 5;
+
+      (autoTable as any)(doc, {
+        startY: currentY,
+        body: data,
+        theme: 'plain',
+        styles: { fontSize: 9, cellPadding: 1 },
+        columnStyles: { 0: { fontStyle: 'bold', cellWidth: 60 } },
+        margin: { left: 14 },
+      });
+      
+      currentY = (doc as any).lastAutoTable.finalY + 10;
+    };
+
+    addSection('Dados de Saúde', [
+      ['Doenças Crônicas', anamnese.doencas_cronicas || '-'],
+      ['Problemas de Saúde', anamnese.problemas_saude || '-'],
+      ['Cirurgias', anamnese.cirurgias || '-'],
+      ['Condições Hormonais', anamnese.condicoes_hormonais || '-'],
+      ['Alergias', anamnese.alergias || '-'],
+      ['Medicamentos', anamnese.medicamentos || '-'],
+    ]);
+
+    addSection('Hábitos Alimentares', [
+      ['Consumo de Água', anamnese.consumo_agua || '-'],
+      ['Frequência Refeições', anamnese.frequencia_refeicoes || '-'],
+      ['Consumo Fastfood', anamnese.consumo_fastfood || '-'],
+      ['Consumo Doces', anamnese.consumo_doces || '-'],
+      ['Consumo Álcool', anamnese.consumo_alcool || '-'],
+      ['Suplementos', anamnese.uso_suplementos || '-'],
+    ]);
+
+    addSection('Estilo de Vida', [
+      ['Atividade Física', anamnese.atividade_fisica || '-'],
+      ['Frequência', anamnese.frequencia_atividade_fisica || '-'],
+      ['Rotina de Sono', anamnese.rotina_sono || '-'],
+      ['Nível de Estresse', anamnese.nivel_estresse || '-'],
+    ]);
+
+    if (anamnese.observacoes) {
+      addSection('Observações', [['Obs', anamnese.observacoes]]);
+    }
+
+    // Rodapé
+    const pageCount = (doc as any).internal.getNumberOfPages();
+    for (let i = 1; i <= pageCount; i++) {
+      doc.setPage(i);
+      doc.setFontSize(10);
+      doc.setTextColor(150);
+      doc.text('Sistema de Gestão Fitness - Profissional', 105, 285, { align: 'center' });
+    }
+
+    doc.save(`Anamnese_${anamnese.students?.nome || 'Aluno'}_${anamnese.data}.pdf`);
+  };
 
   return (
     <div className="p-8 space-y-8 bg-black min-h-screen text-white">
@@ -204,24 +329,39 @@ export default function AnamneseModule() {
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-3">
                         <div className="w-10 h-10 rounded-full bg-zinc-800 flex items-center justify-center text-orange-500 font-bold border border-zinc-700">
-                          {anamnese.aluno?.nome?.charAt(0) || <User size={16} />}
+                          {anamnese.students?.nome?.charAt(0) || <User size={16} />}
                         </div>
-                        <p className="font-bold text-white">{anamnese.aluno?.nome || 'Aluno não encontrado'}</p>
+                        <p className="font-bold text-white">{anamnese.students?.nome || 'Aluno não encontrado'}</p>
                       </div>
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-2 text-sm text-zinc-400">
                         <Calendar size={14} className="text-zinc-600" />
-                        {new Date(anamnese.data_anamnese).toLocaleDateString('pt-BR')}
+                        {new Date(anamnese.data).toLocaleDateString('pt-BR')}
                       </div>
                     </td>
                     <td className="px-6 py-4 text-sm text-zinc-400">
                       {anamnese.objetivo_nutricional || '-'}
                     </td>
                     <td className="px-6 py-4 text-right">
-                      <button className="p-2 text-zinc-500 hover:text-orange-500 hover:bg-orange-500/10 rounded-xl transition-colors">
-                        <MoreVertical size={20} />
-                      </button>
+                      <div className="flex items-center justify-end gap-2">
+                        <button 
+                          onClick={() => handleViewAnamnese(anamnese)}
+                          className="px-4 py-2 bg-zinc-800 hover:bg-orange-500 hover:text-black rounded-xl text-xs font-bold transition-all"
+                        >
+                          Ver Detalhes
+                        </button>
+                        <button 
+                          onClick={() => exportToPDF(anamnese)}
+                          className="p-2 text-zinc-500 hover:text-orange-500 hover:bg-orange-500/10 rounded-xl transition-colors"
+                          title="Exportar PDF"
+                        >
+                          <Save size={20} />
+                        </button>
+                        <button className="p-2 text-zinc-500 hover:text-orange-500 hover:bg-orange-500/10 rounded-xl transition-colors">
+                          <MoreVertical size={20} />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -242,6 +382,116 @@ export default function AnamneseModule() {
       </div>
 
       <AnimatePresence>
+        {showViewModal && selectedAnamnese && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-zinc-900 border border-zinc-800 rounded-3xl w-full max-w-4xl overflow-hidden shadow-2xl flex flex-col max-h-[90vh]"
+            >
+              <div className="p-6 border-b border-zinc-800 flex items-center justify-between shrink-0 bg-zinc-900/50">
+                <div>
+                  <h3 className="text-xl font-bold text-white">Detalhes da Anamnese</h3>
+                  <p className="text-sm text-zinc-500">Aluno: {selectedAnamnese.students?.nome}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button 
+                    onClick={() => exportToPDF(selectedAnamnese)}
+                    className="flex items-center gap-2 bg-orange-500 hover:bg-orange-600 text-black font-bold px-4 py-2 rounded-xl transition-all active:scale-95 shadow-lg shadow-orange-500/20"
+                  >
+                    <Save size={18} />
+                    PDF
+                  </button>
+                  <button 
+                    onClick={() => setShowViewModal(false)}
+                    className="p-2 text-zinc-500 hover:text-white hover:bg-zinc-800 rounded-xl transition-colors"
+                  >
+                    <ArrowLeft size={20} />
+                  </button>
+                </div>
+              </div>
+              
+              <div className="p-6 overflow-y-auto space-y-8">
+                {/* Seção Dados de Saúde */}
+                <div className="space-y-4">
+                  <h4 className="text-lg font-bold text-orange-500 border-b border-zinc-800 pb-2">Histórico de Saúde</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                      <p className="text-xs text-zinc-500 uppercase font-bold mb-1">Doenças Crônicas</p>
+                      <p className="text-white">{selectedAnamnese.doencas_cronicas || '-'}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-zinc-500 uppercase font-bold mb-1">Problemas de Saúde</p>
+                      <p className="text-white">{selectedAnamnese.problemas_saude || '-'}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-zinc-500 uppercase font-bold mb-1">Cirurgias</p>
+                      <p className="text-white">{selectedAnamnese.cirurgias || '-'}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-zinc-500 uppercase font-bold mb-1">Medicamentos</p>
+                      <p className="text-white">{selectedAnamnese.medicamentos || '-'}</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Seção Hábitos Alimentares */}
+                <div className="space-y-4">
+                  <h4 className="text-lg font-bold text-orange-500 border-b border-zinc-800 pb-2">Hábitos Alimentares</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                      <p className="text-xs text-zinc-500 uppercase font-bold mb-1">Consumo de Água</p>
+                      <p className="text-white">{selectedAnamnese.consumo_agua || '-'}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-zinc-500 uppercase font-bold mb-1">Frequência de Refeições</p>
+                      <p className="text-white">{selectedAnamnese.frequencia_refeicoes || '-'}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-zinc-500 uppercase font-bold mb-1">Restrições Alimentares</p>
+                      <p className="text-white">{selectedAnamnese.restricoes_alimentares || '-'}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-zinc-500 uppercase font-bold mb-1">Suplementos</p>
+                      <p className="text-white">{selectedAnamnese.uso_suplementos || '-'}</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Seção Estilo de Vida */}
+                <div className="space-y-4">
+                  <h4 className="text-lg font-bold text-orange-500 border-b border-zinc-800 pb-2">Estilo de Vida</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                      <p className="text-xs text-zinc-500 uppercase font-bold mb-1">Atividade Física</p>
+                      <p className="text-white">{selectedAnamnese.atividade_fisica || '-'}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-zinc-500 uppercase font-bold mb-1">Rotina de Sono</p>
+                      <p className="text-white">{selectedAnamnese.rotina_sono || '-'}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-zinc-500 uppercase font-bold mb-1">Nível de Estresse</p>
+                      <p className="text-white">{selectedAnamnese.nivel_estresse || '-'}</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Observações */}
+                {selectedAnamnese.observacoes && (
+                  <div className="space-y-4">
+                    <h4 className="text-lg font-bold text-orange-500 border-b border-zinc-800 pb-2">Observações Gerais</h4>
+                    <p className="text-zinc-300 bg-black/40 p-4 rounded-2xl border border-zinc-800 italic">
+                      &quot;{selectedAnamnese.observacoes}&quot;
+                    </p>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </div>
+        )}
+
         {showAddModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
             <motion.div 
@@ -271,8 +521,8 @@ export default function AnamneseModule() {
                         <label className="text-sm font-medium text-zinc-400">Aluno *</label>
                         <select 
                           required
-                          value={newAnamnese.aluno_id || ''}
-                          onChange={(e) => setNewAnamnese({...newAnamnese, aluno_id: e.target.value})}
+                          value={newAnamnese.student_id || ''}
+                          onChange={(e) => setNewAnamnese({...newAnamnese, student_id: e.target.value})}
                           className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-orange-500/50 focus:border-orange-500 transition-all"
                         >
                           <option value="">Selecione um aluno</option>
@@ -286,8 +536,8 @@ export default function AnamneseModule() {
                         <input 
                           type="date" 
                           required
-                          value={newAnamnese.data_anamnese || ''}
-                          onChange={(e) => setNewAnamnese({...newAnamnese, data_anamnese: e.target.value})}
+                          value={newAnamnese.data || ''}
+                          onChange={(e) => setNewAnamnese({...newAnamnese, data: e.target.value})}
                           className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-orange-500/50 focus:border-orange-500 transition-all"
                         />
                       </div>

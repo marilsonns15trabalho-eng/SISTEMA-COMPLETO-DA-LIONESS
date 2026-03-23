@@ -184,28 +184,49 @@ export default function FinanceiroModule() {
 
   const fetchData = async () => {
     setLoading(true);
-    const [pagamentosRes, boletosRes, alunosRes] = await Promise.all([
-      supabase.from('financeiro').select('*').order('data_vencimento', { ascending: false }),
-      supabase.from('bills').select('*, students(name)').order('due_date', { ascending: false }),
-      supabase.from('students').select('id, name, due_day, plans(price)')
-    ]);
+    try {
+      const [pagamentosRes, boletosRes, alunosRes] = await Promise.all([
+        supabase.from('financeiro').select('*').order('data_vencimento', { ascending: false }),
+        supabase.from('bills').select('*, students(name)').order('due_date', { ascending: false }),
+        supabase.from('students').select('id, name, due_day, plans(price)')
+      ]);
 
-    if (pagamentosRes.data) setPagamentos(pagamentosRes.data);
-    if (boletosRes.data) {
-      const mappedBoletos = (boletosRes.data as any[]).map(b => ({
-        ...b,
-        students: b.students ? { name: b.students.name } : null
-      }));
-      setBoletos(mappedBoletos);
-    }
-    if (alunosRes.data) {
-      const mappedAlunos = (alunosRes.data as any[]).map((a: any) => ({
-        id: a.id,
-        name: a.name,
-        due_day: a.due_day,
-        plans: a.plans
-      }));
-      setAlunos(mappedAlunos);
+      if (pagamentosRes.data) setPagamentos(pagamentosRes.data);
+      
+      if (boletosRes.data) {
+        const mappedBoletos = (boletosRes.data as any[]).map(b => ({
+          ...b,
+          students: b.students ? { name: b.students.name } : null
+        }));
+        setBoletos(mappedBoletos);
+      } else if (boletosRes.error) {
+        console.warn('Erro ao buscar boletos com join "students", tentando sem join:', boletosRes.error.message);
+        const { data: dataNoJoin } = await supabase.from('bills').select('*').order('due_date', { ascending: false });
+        if (dataNoJoin) setBoletos(dataNoJoin.map(b => ({ ...b, students: null })));
+      }
+
+      if (alunosRes.data) {
+        const mappedAlunos = (alunosRes.data as any[]).map((a: any) => ({
+          id: a.id,
+          name: a.name || a.nome,
+          due_day: a.due_day,
+          plans: a.plans
+        }));
+        setAlunos(mappedAlunos);
+      } else if (alunosRes.error) {
+        console.warn('Erro ao buscar alunos por "name", tentando "nome":', alunosRes.error.message);
+        const { data: dataNome } = await supabase.from('students').select('id, nome, due_day, plans(price)');
+        if (dataNome) {
+          setAlunos(dataNome.map((a: any) => ({
+            id: a.id,
+            name: a.nome,
+            due_day: a.due_day,
+            plans: a.plans
+          })));
+        }
+      }
+    } catch (err) {
+      console.error('Erro fatal ao buscar dados financeiros:', err);
     }
     setLoading(false);
   };

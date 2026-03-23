@@ -15,7 +15,8 @@ import {
   Loader2,
   Plus,
   ArrowLeft,
-  AlertCircle
+  AlertCircle,
+  MessageCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { supabase } from '@/lib/supabase';
@@ -78,6 +79,17 @@ export default function AlunosModule() {
     status: 'ativo'
   });
   const [selectedPlanoId, setSelectedPlanoId] = useState('');
+
+  const sendWhatsApp = (aluno: Aluno) => {
+    const phone = aluno.celular || aluno.telefone;
+    if (!phone) {
+      showNotify('Aluno sem telefone cadastrado.', 'error');
+      return;
+    }
+    const cleanPhone = phone.replace(/\D/g, '');
+    const message = encodeURIComponent(`Olá ${aluno.nome}, tudo bem? Gostaria de falar sobre sua matrícula na academia.`);
+    window.open(`https://wa.me/55${cleanPhone}?text=${message}`, '_blank');
+  };
 
   useEffect(() => {
     const fetchData = async () => {
@@ -214,11 +226,13 @@ export default function AlunosModule() {
     }
 
     // Mapeamento dos campos do formulário para as colunas do banco
+    const plano = planos.find(p => p.id === selectedPlanoId);
     const dbAluno = {
       name: newAluno.nome,
       email: newAluno.email || null,
       phone: newAluno.telefone || null,
-      plan: selectedPlanoId || null,
+      plan: plano ? plano.name : (newAluno.modalidade || null),
+      plan_name: plano ? plano.name : null,
       status: newAluno.status || 'ativo',
       join_date: newAluno.data_matricula || null,
       address: newAluno.endereco || null,
@@ -233,7 +247,21 @@ export default function AlunosModule() {
       birth_date: newAluno.data_nascimento || null,
       gender: newAluno.genero || null,
       bairro: newAluno.bairro || null,
-      user_id: null // Enviando null para evitar erro de chave estrangeira
+      // Novos campos para garantir compatibilidade total
+      cpf: newAluno.cpf || null,
+      rg: newAluno.rg || null,
+      marital_status: newAluno.estado_civil || null,
+      cellphone: newAluno.celular || null,
+      zip_code: newAluno.cep || null,
+      number: newAluno.numero || null,
+      complement: newAluno.complemento || null,
+      city: newAluno.cidade || null,
+      state: newAluno.estado || null,
+      emergency_phone: newAluno.contato_emergencia_telefone || null,
+      emergency_relationship: newAluno.contato_emergencia_parentesco || null,
+      due_day: newAluno.dia_vencimento || null,
+      group: newAluno.grupo || null,
+      user_id: null
     };
 
     try {
@@ -414,6 +442,13 @@ export default function AlunosModule() {
                     </td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex items-center justify-end gap-2">
+                        <button 
+                          onClick={() => sendWhatsApp(aluno)}
+                          className="p-2 text-zinc-500 hover:text-emerald-500 transition-colors"
+                          title="Enviar WhatsApp"
+                        >
+                          <MessageCircle size={18} />
+                        </button>
                         <button 
                           onClick={() => handleEditAluno(aluno)}
                           className="p-2 text-zinc-500 hover:text-orange-500 transition-colors"

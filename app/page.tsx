@@ -49,7 +49,7 @@ export default function Page() {
               transition={{ duration: 0.3, ease: 'easeInOut' }}
               className="h-full"
             >
-              {activeTab === 'home' && <Dashboard />}
+              {activeTab === 'home' && <Dashboard setActiveTab={setActiveTab} />}
               {activeTab === 'alunos' && <AlunosModule />}
               {activeTab === 'financeiro' && <FinanceiroModule />}
               {activeTab === 'planos' && <PlanosModule />}

@@ -10,7 +10,9 @@ import {
   Filter,
   MoreVertical,
   Calendar,
-  User
+  User,
+  ArrowLeft,
+  Save
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -26,7 +28,7 @@ interface Exercicio {
 
 interface Treino {
   id: string;
-  aluno_id: string;
+  student_id: string;
   nome: string;
   objetivo?: string;
   nivel?: string;
@@ -35,7 +37,7 @@ interface Treino {
   exercicios?: Exercicio[];
   ativo?: boolean;
   created_at: string;
-  alunos?: { nome: string }; // Join
+  students?: { name: string }; // Join
 }
 
 export default function TreinosModule() {
@@ -44,7 +46,7 @@ export default function TreinosModule() {
   const [searchTerm, setSearchTerm] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
   const [newTreino, setNewTreino] = useState<Partial<Treino>>({
-    aluno_id: '',
+    student_id: '',
     nome: '',
     objetivo: '',
     nivel: 'Iniciante',
@@ -53,23 +55,34 @@ export default function TreinosModule() {
     descricao: '',
     ativo: true
   });
-  const [alunosList, setAlunosList] = useState<{id: string, nome: string}[]>([]);
+  const [alunosList, setAlunosList] = useState<{id: string, name: string}[]>([]);
 
   useEffect(() => {
     const fetchTreinos = async () => {
       // Buscar treinos com o nome do aluno (join)
+      // Tentar join com 'students'
       const { data, error } = await supabase
         .from('treinos')
         .select(`
           *,
-          alunos (
-            nome
+          students (
+            name
           )
         `)
         .order('created_at', { ascending: false });
 
       if (error) {
-        console.error('Erro ao buscar treinos:', error);
+        console.warn('Erro ao buscar treinos com join "students", tentando sem join:', error.message);
+        const { data: dataNoJoin, error: errorNoJoin } = await supabase
+          .from('treinos')
+          .select('*')
+          .order('created_at', { ascending: false });
+          
+        if (errorNoJoin) {
+          console.error('Erro ao buscar treinos (sem join):', errorNoJoin.message);
+        } else {
+          setTreinos(dataNoJoin || []);
+        }
       } else {
         setTreinos(data || []);
       }
@@ -77,8 +90,21 @@ export default function TreinosModule() {
     };
 
     const fetchAlunosList = async () => {
-      const { data } = await supabase.from('alunos').select('id, nome').order('nome');
-      setAlunosList(data || []);
+      try {
+        // Tentar buscar por 'name' primeiro, se falhar tentar 'nome'
+        const { data, error } = await supabase.from('students').select('*').order('name', { ascending: true });
+        
+        if (error) {
+          console.warn('Erro ao buscar alunos por "name", tentando "nome":', error.message);
+          const { data: dataNome, error: errorNome } = await supabase.from('students').select('*').order('nome', { ascending: true });
+          if (errorNome) throw errorNome;
+          setAlunosList(dataNome?.map(a => ({ id: a.id, name: a.nome || a.name })) || []);
+        } else {
+          setAlunosList(data?.map(a => ({ id: a.id, name: a.name || a.nome })) || []);
+        }
+      } catch (err) {
+        console.error('Erro fatal ao buscar lista de alunos:', err);
+      }
     };
 
     fetchTreinos();
@@ -100,10 +126,10 @@ export default function TreinosModule() {
       if (error) throw error;
       
       setShowAddModal(false);
-      setNewTreino({ aluno_id: '', nome: '', descricao: '', ativo: true, duracao_minutos: 60, exercicios: [] });
+      setNewTreino({ student_id: '', nome: '', descricao: '', ativo: true, duracao_minutos: 60, exercicios: [] });
       
       // Recarregar
-      const { data } = await supabase.from('treinos').select(`*, alunos(nome)`).order('created_at', { ascending: false });
+      const { data } = await supabase.from('treinos').select(`*, students(name)`).order('created_at', { ascending: false });
       setTreinos(data || []);
     } catch (error) {
       console.error('Erro ao cadastrar treino:', error);
@@ -112,8 +138,79 @@ export default function TreinosModule() {
 
   const filteredTreinos = treinos.filter(t => 
     (t.nome || '').toLowerCase().includes((searchTerm || '').toLowerCase()) ||
-    (t.alunos?.nome || '').toLowerCase().includes((searchTerm || '').toLowerCase())
+    (t.students?.name || '').toLowerCase().includes((searchTerm || '').toLowerCase())
   );
+
+  const [showViewModal, setShowViewModal] = useState(false);
+  const [selectedTreino, setSelectedTreino] = useState<Treino | null>(null);
+
+  const handleViewTreino = (treino: Treino) => {
+    setSelectedTreino(treino);
+    setShowViewModal(true);
+  };
+
+  const exportToPDF = async (treino: Treino) => {
+    const { default: jsPDF } = await import('jspdf');
+    const { default: autoTable } = await import('jspdf-autotable');
+
+    const doc = new jsPDF();
+    const date = new Date().toLocaleDateString('pt-BR');
+
+    // Cabeçalho
+    doc.setFillColor(59, 130, 246); // Azul (Blue-500)
+    doc.rect(0, 0, 210, 40, 'F');
+    
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(22);
+    doc.setFont('helvetica', 'bold');
+    doc.text('FICHA DE TREINO', 105, 20, { align: 'center' });
+    
+    doc.setFontSize(10);
+    doc.text(`Gerado em: ${date}`, 105, 30, { align: 'center' });
+
+    // Informações do Aluno
+    doc.setTextColor(0, 0, 0);
+    doc.setFontSize(14);
+    doc.text('Informações do Treino', 14, 50);
+    
+    doc.setFontSize(11);
+    doc.setFont('helvetica', 'normal');
+    doc.text(`Aluno: ${treino.students?.name || 'Não informado'}`, 14, 60);
+    doc.text(`Treino: ${treino.nome}`, 14, 67);
+    doc.text(`Data: ${new Date(treino.created_at).toLocaleDateString('pt-BR')}`, 14, 74);
+    doc.text(`Objetivo: ${treino.objetivo || 'Não informado'}`, 14, 81);
+
+    // Tabela de Exercícios
+    const tableData = (treino.exercicios || []).map((ex, index) => [
+      index + 1,
+      ex.nome,
+      ex.series,
+      ex.repeticoes,
+      ex.carga || '-',
+      ex.descanso || '-',
+      ex.observacoes || '-'
+    ]);
+
+    (autoTable as any)(doc, {
+      startY: 90,
+      head: [['#', 'Exercício', 'Séries', 'Reps', 'Carga', 'Descanso', 'Obs']],
+      body: tableData,
+      headStyles: { fill: [59, 130, 246], textColor: [255, 255, 255], fontStyle: 'bold' },
+      alternateRowStyles: { fillColor: [245, 245, 245] },
+      margin: { top: 90 },
+    });
+
+    // Rodapé
+    const pageCount = (doc as any).internal.getNumberOfPages();
+    for (let i = 1; i <= pageCount; i++) {
+      doc.setPage(i);
+      doc.setFontSize(10);
+      doc.setTextColor(150);
+      doc.text('Sistema de Gestão Fitness - Profissional', 105, 285, { align: 'center' });
+    }
+
+    doc.save(`Treino_${treino.students?.name || 'Aluno'}_${treino.nome}.pdf`);
+  };
 
   return (
     <div className="p-8 space-y-8 bg-black min-h-screen text-white">
@@ -182,7 +279,7 @@ export default function TreinosModule() {
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-2 text-sm text-zinc-300">
                         <User size={14} className="text-zinc-500" />
-                        {treino.alunos?.nome || 'Aluno não encontrado'}
+                        {treino.students?.name || 'Aluno não encontrado'}
                       </div>
                     </td>
                     <td className="px-6 py-4">
@@ -192,12 +289,24 @@ export default function TreinosModule() {
                       </div>
                     </td>
                     <td className="px-6 py-4 text-right">
-                      <button className="px-4 py-2 bg-zinc-800 hover:bg-blue-500 hover:text-white rounded-xl text-xs font-bold transition-all mr-2">
-                        Ver Ficha
-                      </button>
-                      <button className="p-2 text-zinc-500 hover:text-white transition-colors">
-                        <MoreVertical size={20} />
-                      </button>
+                      <div className="flex items-center justify-end gap-2">
+                        <button 
+                          onClick={() => handleViewTreino(treino)}
+                          className="px-4 py-2 bg-zinc-800 hover:bg-blue-500 hover:text-white rounded-xl text-xs font-bold transition-all"
+                        >
+                          Ver Ficha
+                        </button>
+                        <button 
+                          onClick={() => exportToPDF(treino)}
+                          className="p-2 text-zinc-500 hover:text-blue-500 hover:bg-blue-500/10 rounded-xl transition-colors"
+                          title="Exportar PDF"
+                        >
+                          <Save size={20} />
+                        </button>
+                        <button className="p-2 text-zinc-500 hover:text-white transition-colors">
+                          <MoreVertical size={20} />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -216,6 +325,91 @@ export default function TreinosModule() {
       </div>
 
       <AnimatePresence>
+        {showViewModal && selectedTreino && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-zinc-900 border border-zinc-800 rounded-3xl w-full max-w-3xl overflow-hidden shadow-2xl flex flex-col max-h-[90vh]"
+            >
+              <div className="p-6 border-b border-zinc-800 flex items-center justify-between shrink-0 bg-zinc-900/50">
+                <div>
+                  <h3 className="text-xl font-bold text-white">{selectedTreino.nome}</h3>
+                  <p className="text-sm text-zinc-500">Aluno: {selectedTreino.students?.name}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button 
+                    onClick={() => exportToPDF(selectedTreino)}
+                    className="flex items-center gap-2 bg-blue-500 hover:bg-blue-600 text-white font-bold px-4 py-2 rounded-xl transition-all active:scale-95 shadow-lg shadow-blue-500/20"
+                  >
+                    <Save size={18} />
+                    PDF
+                  </button>
+                  <button 
+                    onClick={() => setShowViewModal(false)}
+                    className="p-2 text-zinc-500 hover:text-white hover:bg-zinc-800 rounded-xl transition-colors"
+                  >
+                    <ArrowLeft size={20} />
+                  </button>
+                </div>
+              </div>
+              
+              <div className="p-6 overflow-y-auto space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="bg-black/40 p-4 rounded-2xl border border-zinc-800">
+                    <p className="text-xs text-zinc-500 uppercase font-bold mb-1">Duração</p>
+                    <p className="text-white">{selectedTreino.duracao_minutos} min</p>
+                  </div>
+                  <div className="bg-black/40 p-4 rounded-2xl border border-zinc-800">
+                    <p className="text-xs text-zinc-500 uppercase font-bold mb-1">Nível</p>
+                    <p className="text-white">{selectedTreino.nivel || '-'}</p>
+                  </div>
+                  <div className="bg-black/40 p-4 rounded-2xl border border-zinc-800">
+                    <p className="text-xs text-zinc-500 uppercase font-bold mb-1">Objetivo</p>
+                    <p className="text-white">{selectedTreino.objetivo || '-'}</p>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <h4 className="text-lg font-bold text-blue-500 flex items-center gap-2">
+                    <Dumbbell size={20} />
+                    Exercícios
+                  </h4>
+                  <div className="space-y-3">
+                    {(selectedTreino.exercicios || []).map((ex, idx) => (
+                      <div key={idx} className="bg-zinc-800/30 border border-zinc-800 p-4 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+                        <div className="flex-1">
+                          <p className="font-bold text-white text-lg">{ex.nome}</p>
+                          <p className="text-sm text-zinc-500">{ex.observacoes || 'Sem observações'}</p>
+                        </div>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 shrink-0">
+                          <div className="text-center">
+                            <p className="text-[10px] text-zinc-500 uppercase font-bold">Séries</p>
+                            <p className="text-blue-500 font-bold">{ex.series}</p>
+                          </div>
+                          <div className="text-center">
+                            <p className="text-[10px] text-zinc-500 uppercase font-bold">Reps</p>
+                            <p className="text-blue-500 font-bold">{ex.repeticoes}</p>
+                          </div>
+                          <div className="text-center">
+                            <p className="text-[10px] text-zinc-500 uppercase font-bold">Carga</p>
+                            <p className="text-white font-bold">{ex.carga || '-'}</p>
+                          </div>
+                          <div className="text-center">
+                            <p className="text-[10px] text-zinc-500 uppercase font-bold">Descanso</p>
+                            <p className="text-white font-bold">{ex.descanso || '-'}</p>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
         {showAddModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <motion.div 
@@ -232,10 +426,10 @@ export default function TreinosModule() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-1.5">
                     <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Aluno *</label>
-                    <select required value={newTreino.aluno_id || ''} onChange={(e) => setNewTreino({...newTreino, aluno_id: e.target.value})} className="w-full bg-black border border-zinc-800 rounded-xl py-3 px-4 text-white focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 outline-none transition-all">
+                    <select required value={newTreino.student_id || ''} onChange={(e) => setNewTreino({...newTreino, student_id: e.target.value})} className="w-full bg-black border border-zinc-800 rounded-xl py-3 px-4 text-white focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 outline-none transition-all">
                       <option value="" disabled>Selecione um aluno</option>
                       {alunosList.map(aluno => (
-                        <option key={aluno.id} value={aluno.id}>{aluno.nome}</option>
+                        <option key={aluno.id} value={aluno.id}>{aluno.name}</option>
                       ))}
                     </select>
                   </div>
