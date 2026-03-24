@@ -143,6 +143,19 @@ export default function FinanceiroModule() {
     }
   };
 
+  const handleDeleteBoleto = async (boletoId: string) => {
+    if (!confirm('Tem certeza que deseja excluir este boleto?')) return;
+    try {
+      const { error } = await supabase.from('bills').delete().eq('id', boletoId);
+      if (error) throw error;
+      showNotify('Boleto excluído com sucesso!');
+      fetchData();
+    } catch (error) {
+      console.error('Erro ao excluir boleto:', error);
+      showNotify('Erro ao excluir boleto.', 'error');
+    }
+  };
+
   const showNotify = (message: string, type: 'success' | 'error' = 'success') => {
     setNotification({ message, type });
     setTimeout(() => setNotification(null), 3000);
@@ -596,10 +609,11 @@ export default function FinanceiroModule() {
                           {b.status === 'paid' ? 'Pago' : b.status === 'late' ? 'Atrasado' : 'Pendente'}
                         </span>
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3 flex gap-2">
                         {b.status !== 'paid' && (
                           <button onClick={() => setBoletoToPay(b)} className="text-emerald-500 hover:text-emerald-400 font-bold text-xs">Dar Baixa</button>
                         )}
+                        <button onClick={() => handleDeleteBoleto(b.id)} className="text-rose-500 hover:text-rose-400 font-bold text-xs">Excluir</button>
                       </td>
                     </tr>
                   ))}
