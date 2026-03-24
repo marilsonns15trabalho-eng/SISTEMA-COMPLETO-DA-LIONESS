@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import { 
   DollarSign, 
@@ -71,20 +71,27 @@ export default function FinanceiroModule() {
   const [newBoleto, setNewBoleto] = useState({ student_id: '', amount: 0, due_date: '' });
 
   // Agrupar boletos por aluno
-  const boletosPorAluno = alunos.map(aluno => ({
-    ...aluno,
-    boletos: boletos.filter(b => b.student_id === aluno.id)
-  }));
+  const boletosPorAluno = useMemo(() => alunos.map(aluno => {
+    const studentBoletos = boletos.filter(b => b.student_id === aluno.id);
+    const sorted = studentBoletos.sort((a, b) => new Date(a.due_date).getTime() - new Date(b.due_date).getTime());
+    const pendingOrLate = sorted.find(b => b.status === 'pending' || b.status === 'late');
+    const displayBoleto = pendingOrLate || sorted[sorted.length - 1];
+    return {
+      ...aluno,
+      boletos: studentBoletos,
+      displayBoleto
+    };
+  }), [alunos, boletos]);
 
   // Atualizar selectedStudent quando os boletos mudarem
   useEffect(() => {
     if (selectedStudent) {
       const updatedStudent = boletosPorAluno.find(a => a.id === selectedStudent.id);
-      if (updatedStudent) {
+      if (updatedStudent && JSON.stringify(updatedStudent.boletos) !== JSON.stringify(selectedStudent.boletos)) {
         setSelectedStudent(updatedStudent);
       }
     }
-  }, [boletos, boletosPorAluno, selectedStudent]);
+  }, [boletosPorAluno, selectedStudent]);
 
   const gerar3Boletos = async (studentId: string) => {
     const student = alunos.find(a => a.id === studentId);
@@ -529,17 +536,17 @@ export default function FinanceiroModule() {
                   <td className="px-6 py-4 font-bold cursor-pointer hover:text-amber-500 transition-colors" onClick={() => setSelectedStudent(aluno)}>{aluno.name}</td>
                   <td className="px-6 py-4">
                     <div className="flex flex-wrap gap-2">
-                      {aluno.boletos.length > 0 ? aluno.boletos.map(b => (
-                        <div key={b.id} className="bg-zinc-800 px-3 py-1 rounded-lg flex items-center gap-2 text-xs">
-                          <span className="font-mono">R$ {b.amount.toFixed(2)}</span>
+                      {aluno.displayBoleto ? (
+                        <div className="bg-zinc-800 px-3 py-1 rounded-lg flex items-center gap-2 text-xs">
+                          <span className="font-mono">R$ {aluno.displayBoleto.amount.toFixed(2)}</span>
                           <span className={`font-bold uppercase ${
-                            b.status === 'paid' ? 'text-emerald-500' : 
-                            b.status === 'late' ? 'text-rose-500' : 'text-amber-500'
+                            aluno.displayBoleto.status === 'paid' ? 'text-emerald-500' : 
+                            aluno.displayBoleto.status === 'late' ? 'text-rose-500' : 'text-amber-500'
                           }`}>
-                            {b.status === 'paid' ? 'Pago' : b.status === 'late' ? 'Atrasado' : 'Pendente'}
+                            {aluno.displayBoleto.status === 'paid' ? 'Pago' : aluno.displayBoleto.status === 'late' ? 'Atrasado' : 'Pendente'}
                           </span>
                         </div>
-                      )) : <span className="text-zinc-600 text-xs">Sem boletos</span>}
+                      ) : <span className="text-zinc-600 text-xs">Sem boletos</span>}
                     </div>
                   </td>
                 </tr>
