@@ -146,13 +146,19 @@ export default function FinanceiroModule() {
   const handleDeleteBoleto = async (boletoId: string) => {
     if (!confirm('Tem certeza que deseja excluir este boleto?')) return;
     try {
+      console.log('Tentando excluir boleto:', boletoId);
       const { error } = await supabase.from('bills').delete().eq('id', boletoId);
-      if (error) throw error;
+      
+      if (error) {
+        console.error('Erro detalhado do Supabase:', error);
+        throw error;
+      }
+      
       showNotify('Boleto excluído com sucesso!');
       fetchData();
     } catch (error) {
       console.error('Erro ao excluir boleto:', error);
-      showNotify('Erro ao excluir boleto.', 'error');
+      showNotify(`Erro ao excluir boleto: ${error instanceof Error ? error.message : 'Erro desconhecido'}`, 'error');
     }
   };
 
