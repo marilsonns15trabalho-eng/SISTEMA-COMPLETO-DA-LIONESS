@@ -73,6 +73,12 @@ export default function ConfiguracoesModule() {
     
     const mockUserId = '00000000-0000-0000-0000-000000000000';
 
+    if (!config.nome_academia) {
+      setMessage({ type: 'error', text: 'O nome da academia é obrigatório.' });
+      setSaving(false);
+      return;
+    }
+
     try {
       if (config.id) {
         // Update
@@ -96,9 +102,9 @@ export default function ConfiguracoesModule() {
       
       setMessage({ type: 'success', text: 'Configurações salvas com sucesso!' });
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Erro ao salvar configurações:', error);
-      setMessage({ type: 'error', text: 'Erro ao salvar configurações.' });
+      setMessage({ type: 'error', text: `Erro ao salvar configurações: ${error.message || 'Erro desconhecido'}` });
     } finally {
       setSaving(false);
     }

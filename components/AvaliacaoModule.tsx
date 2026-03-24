@@ -756,12 +756,8 @@ export default function AvaliacaoModule() {
                   <div className="grid grid-cols-2 gap-y-3">
                     <div className="flex justify-between pr-4 border-r border-zinc-800"><span className="text-zinc-500">Tricipital:</span> <span className="font-bold">{selectedReport.tricipital || '-'} mm</span></div>
                     <div className="flex justify-between pl-4"><span className="text-zinc-500">Subescapular:</span> <span className="font-bold">{selectedReport.subescapular || '-'} mm</span></div>
-                    <div className="flex justify-between pr-4 border-r border-zinc-800"><span className="text-zinc-500">Peitoral:</span> <span className="font-bold">{selectedReport.peitoral || '-'} mm</span></div>
-                    <div className="flex justify-between pl-4"><span className="text-zinc-500">Axilar Média:</span> <span className="font-bold">{selectedReport.axilar_media || '-'} mm</span></div>
                     <div className="flex justify-between pr-4 border-r border-zinc-800"><span className="text-zinc-500">Supra-ilíaca:</span> <span className="font-bold">{selectedReport.supra_iliaca || '-'} mm</span></div>
                     <div className="flex justify-between pl-4"><span className="text-zinc-500">Abdominal:</span> <span className="font-bold">{selectedReport.abdominal || '-'} mm</span></div>
-                    <div className="flex justify-between pr-4 border-r border-zinc-800"><span className="text-zinc-500">Coxa:</span> <span className="font-bold">{selectedReport.coxa || '-'} mm</span></div>
-                    <div className="flex justify-between pl-4"><span className="text-zinc-500">Panturrilha:</span> <span className="font-bold">{selectedReport.panturrilha || '-'} mm</span></div>
                   </div>
                 </div>
               </div>

@@ -49,6 +49,7 @@ interface Student {
 }
 
 export default function FinanceiroModule() {
+  const [activeTab, setActiveTab] = useState<'geral' | 'alunos'>('geral');
   const [pagamentos, setPagamentos] = useState<Pagamento[]>([]);
   const [boletos, setBoletos] = useState<Boleto[]>([]);
   const [alunos, setAlunos] = useState<Student[]>([]);
@@ -58,6 +59,7 @@ export default function FinanceiroModule() {
   const [showBoletoModal, setShowBoletoModal] = useState(false);
   const [showConfirmLote, setShowConfirmLote] = useState(false);
   const [boletoToPay, setBoletoToPay] = useState<Boleto | null>(null);
+  const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
   const [notification, setNotification] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
   const [newPagamento, setNewPagamento] = useState<Partial<Pagamento>>({
     valor: 0,
@@ -67,6 +69,72 @@ export default function FinanceiroModule() {
     descricao: ''
   });
   const [newBoleto, setNewBoleto] = useState({ student_id: '', amount: 0, due_date: '' });
+
+  // Agrupar boletos por aluno
+  const boletosPorAluno = alunos.map(aluno => ({
+    ...aluno,
+    boletos: boletos.filter(b => b.student_id === aluno.id)
+  }));
+
+  // Atualizar selectedStudent quando os boletos mudarem
+  useEffect(() => {
+    if (selectedStudent) {
+      const updatedStudent = boletosPorAluno.find(a => a.id === selectedStudent.id);
+      if (updatedStudent) {
+        setSelectedStudent(updatedStudent);
+      }
+    }
+  }, [boletos, boletosPorAluno, selectedStudent]);
+
+  const gerar3Boletos = async (studentId: string) => {
+    const student = alunos.find(a => a.id === studentId);
+    if (!student) return;
+
+    const studentBoletos = boletos.filter(b => b.student_id === studentId);
+    const newBoletos = [];
+    const now = new Date();
+    
+    // Lógica inteligente: próximos 3 meses sem boleto pendente/atrasado
+    let mesesGerados = 0;
+    let mesAtual = now.getMonth();
+    let anoAtual = now.getFullYear();
+
+    while (mesesGerados < 3) {
+      const dataVencimento = new Date(anoAtual, mesAtual, student.due_day || 10);
+      const dataStr = dataVencimento.toISOString().split('T')[0];
+      
+      const existeBoleto = studentBoletos.some(b => 
+        b.due_date.startsWith(`${dataVencimento.getFullYear()}-${(dataVencimento.getMonth()+1).toString().padStart(2, '0')}`)
+      );
+
+      if (!existeBoleto) {
+        newBoletos.push({
+          student_id: studentId,
+          amount: student.plans?.price || 0,
+          due_date: dataStr,
+          status: 'pending',
+          code: Math.random().toString(36).substring(2, 10).toUpperCase()
+        });
+        mesesGerados++;
+      }
+
+      mesAtual++;
+      if (mesAtual > 11) {
+        mesAtual = 0;
+        anoAtual++;
+      }
+    }
+
+    try {
+      const { error } = await supabase.from('bills').insert(newBoletos);
+      if (error) throw error;
+      showNotify('3 boletos gerados com sucesso!');
+      fetchData();
+    } catch (error) {
+      console.error('Erro ao gerar boletos:', error);
+      showNotify('Erro ao gerar boletos.', 'error');
+    }
+  };
 
   const showNotify = (message: string, type: 'success' | 'error' = 'success') => {
     setNotification({ message, type });
@@ -355,84 +423,188 @@ export default function FinanceiroModule() {
         )}
       </AnimatePresence>
 
-      {/* Cards de Resumo */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-3xl">
-          <p className="text-zinc-500 text-sm font-medium mb-1">Receitas (Pagas)</p>
-          <h3 className="text-3xl font-bold text-emerald-500">R$ {totalReceitas.toFixed(2)}</h3>
-        </div>
-        <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-3xl">
-          <p className="text-zinc-500 text-sm font-medium mb-1">Despesas (Pagas)</p>
-          <h3 className="text-3xl font-bold text-rose-500">R$ {totalDespesas.toFixed(2)}</h3>
-        </div>
-        <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-3xl">
-          <p className="text-zinc-500 text-sm font-medium mb-1">Saldo Atual</p>
-          <h3 className="text-3xl font-bold text-white">R$ {saldo.toFixed(2)}</h3>
+      {/* Cabeçalho e Abas */}
+      <div className="flex items-center justify-between mb-8">
+        <h2 className="text-3xl font-bold">Financeiro</h2>
+        <div className="flex bg-zinc-900 border border-zinc-800 rounded-2xl p-1">
+          <button onClick={() => setActiveTab('geral')} className={`px-6 py-2 rounded-xl font-bold transition-all ${activeTab === 'geral' ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-white'}`}>Geral</button>
+          <button onClick={() => setActiveTab('alunos')} className={`px-6 py-2 rounded-xl font-bold transition-all ${activeTab === 'alunos' ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-white'}`}>Por Aluno</button>
         </div>
       </div>
 
-      {/* Tabelas */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {/* Transações */}
+      {activeTab === 'geral' ? (
+        <>
+          {/* Cards de Resumo */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-3xl">
+              <p className="text-zinc-500 text-sm font-medium mb-1">Receitas (Pagas)</p>
+              <h3 className="text-3xl font-bold text-emerald-500">R$ {totalReceitas.toFixed(2)}</h3>
+            </div>
+            <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-3xl">
+              <p className="text-zinc-500 text-sm font-medium mb-1">Despesas (Pagas)</p>
+              <h3 className="text-3xl font-bold text-rose-500">R$ {totalDespesas.toFixed(2)}</h3>
+            </div>
+            <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-3xl">
+              <p className="text-zinc-500 text-sm font-medium mb-1">Saldo Atual</p>
+              <h3 className="text-3xl font-bold text-white">R$ {saldo.toFixed(2)}</h3>
+            </div>
+          </div>
+
+          {/* Tabelas */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            {/* Transações */}
+            <div className="bg-zinc-900 border border-zinc-800 rounded-3xl overflow-hidden">
+              <h3 className="p-6 text-xl font-bold border-b border-zinc-800">Transações</h3>
+              <table className="w-full text-left">
+                <tbody className="divide-y divide-zinc-800">
+                  {pagamentos.map(p => (
+                    <tr key={p.id}>
+                      <td className="px-6 py-4">{p.descricao}</td>
+                      <td className="px-6 py-4 font-mono">R$ {p.valor.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {/* Boletos */}
+            <div className="bg-zinc-900 border border-zinc-800 rounded-3xl overflow-hidden">
+              <h3 className="p-6 text-xl font-bold border-b border-zinc-800">Boletos</h3>
+              <table className="w-full text-left">
+                <tbody className="divide-y divide-zinc-800">
+                  {boletos.map(b => (
+                    <tr key={b.id} className="group hover:bg-zinc-800/30 transition-colors">
+                      <td className="px-6 py-4">
+                        <div className="flex flex-col">
+                          <span className="font-bold">{b.students?.name || 'N/A'}</span>
+                          <span className="text-[10px] text-zinc-500 uppercase tracking-tighter">Venc: {new Date(b.due_date).toLocaleDateString('pt-BR')}</span>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex flex-col">
+                          <span className="font-mono font-bold">R$ {b.amount.toFixed(2)}</span>
+                          <span className={`text-[10px] font-bold uppercase ${
+                            b.status === 'paid' ? 'text-emerald-500' : 
+                            b.status === 'late' ? 'text-rose-500' : 'text-amber-500'
+                          }`}>
+                            {b.status === 'paid' ? 'Pago' : b.status === 'late' ? 'Atrasado' : 'Pendente'}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          {b.status !== 'paid' && (
+                            <button 
+                              onClick={() => setBoletoToPay(b)}
+                              className="p-2 text-zinc-500 hover:text-emerald-500 transition-colors"
+                              title="Dar Baixa (Pago)"
+                            >
+                              <CheckCircle2 size={18} />
+                            </button>
+                          )}
+                          <button onClick={() => generatePDF(b)} className="p-2 text-zinc-500 hover:text-white transition-colors" title="Download PDF">
+                            <Download size={18} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      ) : (
         <div className="bg-zinc-900 border border-zinc-800 rounded-3xl overflow-hidden">
-          <h3 className="p-6 text-xl font-bold border-b border-zinc-800">Transações</h3>
+          <h3 className="p-6 text-xl font-bold border-b border-zinc-800">Financeiro por Aluno</h3>
           <table className="w-full text-left">
+            <thead className="bg-zinc-950 text-zinc-500 text-xs uppercase tracking-widest">
+              <tr>
+                <th className="px-6 py-4">Aluno</th>
+                <th className="px-6 py-4">Boletos</th>
+              </tr>
+            </thead>
             <tbody className="divide-y divide-zinc-800">
-              {pagamentos.map(p => (
-                <tr key={p.id}>
-                  <td className="px-6 py-4">{p.descricao}</td>
-                  <td className="px-6 py-4 font-mono">R$ {p.valor.toFixed(2)}</td>
+              {boletosPorAluno.map(aluno => (
+                <tr key={aluno.id}>
+                  <td className="px-6 py-4 font-bold cursor-pointer hover:text-amber-500 transition-colors" onClick={() => setSelectedStudent(aluno)}>{aluno.name}</td>
+                  <td className="px-6 py-4">
+                    <div className="flex flex-wrap gap-2">
+                      {aluno.boletos.length > 0 ? aluno.boletos.map(b => (
+                        <div key={b.id} className="bg-zinc-800 px-3 py-1 rounded-lg flex items-center gap-2 text-xs">
+                          <span className="font-mono">R$ {b.amount.toFixed(2)}</span>
+                          <span className={`font-bold uppercase ${
+                            b.status === 'paid' ? 'text-emerald-500' : 
+                            b.status === 'late' ? 'text-rose-500' : 'text-amber-500'
+                          }`}>
+                            {b.status === 'paid' ? 'Pago' : b.status === 'late' ? 'Atrasado' : 'Pendente'}
+                          </span>
+                        </div>
+                      )) : <span className="text-zinc-600 text-xs">Sem boletos</span>}
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-        {/* Boletos */}
-        <div className="bg-zinc-900 border border-zinc-800 rounded-3xl overflow-hidden">
-          <h3 className="p-6 text-xl font-bold border-b border-zinc-800">Boletos</h3>
-          <table className="w-full text-left">
-            <tbody className="divide-y divide-zinc-800">
-              {boletos.map(b => (
-                <tr key={b.id} className="group hover:bg-zinc-800/30 transition-colors">
-                  <td className="px-6 py-4">
-                    <div className="flex flex-col">
-                      <span className="font-bold">{b.students?.name || 'N/A'}</span>
-                      <span className="text-[10px] text-zinc-500 uppercase tracking-tighter">Venc: {new Date(b.due_date).toLocaleDateString('pt-BR')}</span>
-                    </div>
-                  </td>
-                  <td className="px-6 py-4">
-                    <div className="flex flex-col">
-                      <span className="font-mono font-bold">R$ {b.amount.toFixed(2)}</span>
-                      <span className={`text-[10px] font-bold uppercase ${
-                        b.status === 'paid' ? 'text-emerald-500' : 
-                        b.status === 'late' ? 'text-rose-500' : 'text-amber-500'
-                      }`}>
-                        {b.status === 'paid' ? 'Pago' : b.status === 'late' ? 'Atrasado' : 'Pendente'}
-                      </span>
-                    </div>
-                  </td>
-                  <td className="px-6 py-4 text-right">
-                    <div className="flex items-center justify-end gap-2">
-                      {b.status !== 'paid' && (
-                        <button 
-                          onClick={() => setBoletoToPay(b)}
-                          className="p-2 text-zinc-500 hover:text-emerald-500 transition-colors"
-                          title="Dar Baixa (Pago)"
-                        >
-                          <CheckCircle2 size={18} />
-                        </button>
-                      )}
-                      <button onClick={() => generatePDF(b)} className="p-2 text-zinc-500 hover:text-white transition-colors" title="Download PDF">
-                        <Download size={18} />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      )}
+      
+      {/* Modal de Detalhes do Aluno */}
+      <AnimatePresence>
+        {selectedStudent && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              onClick={() => setSelectedStudent(null)}
+              className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0, y: 20 }} animate={{ scale: 1, opacity: 1, y: 0 }} exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              className="relative bg-zinc-900 border border-zinc-800 rounded-3xl p-8 w-full max-w-4xl shadow-2xl max-h-[90vh] overflow-y-auto"
+            >
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-2xl font-bold">{selectedStudent.name}</h3>
+                <button onClick={() => gerar3Boletos(selectedStudent.id)} className="bg-amber-500 hover:bg-amber-600 text-black font-bold py-2 px-4 rounded-xl transition-all">Gerar 3 Boletos</button>
+              </div>
+              
+              <table className="w-full text-left">
+                <thead className="bg-zinc-950 text-zinc-500 text-xs uppercase tracking-widest">
+                  <tr>
+                    <th className="px-4 py-3">Vencimento</th>
+                    <th className="px-4 py-3">Valor</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3">Ações</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-800">
+                  {selectedStudent.boletos.map(b => (
+                    <tr key={b.id}>
+                      <td className="px-4 py-3 font-mono">{new Date(b.due_date).toLocaleDateString('pt-BR')}</td>
+                      <td className="px-4 py-3 font-mono">R$ {b.amount.toFixed(2)}</td>
+                      <td className="px-4 py-3">
+                        <span className={`font-bold uppercase text-xs ${
+                          b.status === 'paid' ? 'text-emerald-500' : 
+                          b.status === 'late' ? 'text-rose-500' : 'text-amber-500'
+                        }`}>
+                          {b.status === 'paid' ? 'Pago' : b.status === 'late' ? 'Atrasado' : 'Pendente'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        {b.status !== 'paid' && (
+                          <button onClick={() => setBoletoToPay(b)} className="text-emerald-500 hover:text-emerald-400 font-bold text-xs">Dar Baixa</button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="mt-6">
+                <button onClick={() => setSelectedStudent(null)} className="w-full py-4 bg-zinc-800 hover:bg-zinc-700 text-white font-bold rounded-2xl transition-all">Fechar</button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
       
       {/* Modal de Transação */}
       <AnimatePresence>

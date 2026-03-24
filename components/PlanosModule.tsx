@@ -52,6 +52,7 @@ export default function PlanosModule() {
   }, []);
 
   const [editingPlano, setEditingPlano] = useState<Plano | null>(null);
+  const [deleteConfirmation, setDeleteConfirmation] = useState<string | null>(null);
 
   const handleEdit = (plano: Plano) => {
     setEditingPlano(plano);
@@ -106,20 +107,37 @@ export default function PlanosModule() {
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Tem certeza que deseja excluir este plano? Alunos já matriculados não serão afetados.')) return;
+    setDeleteConfirmation(id);
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteConfirmation) return;
+
+    const plano = planos.find(p => p.id === deleteConfirmation);
+    if (!plano) return;
 
     try {
-      const { error } = await supabase
-        .from('plans')
-        .update({ active: false })
-        .eq('id', id);
-      
-      if (error) throw error;
+      if (plano.active) {
+        // Se está ativo, desativa
+        const { error } = await supabase
+          .from('plans')
+          .update({ active: false })
+          .eq('id', deleteConfirmation);
+        if (error) throw error;
+      } else {
+        // Se já está desativado, exclui
+        const { error } = await supabase
+          .from('plans')
+          .delete()
+          .eq('id', deleteConfirmation);
+        if (error) throw error;
+      }
       
       const { data } = await supabase.from('plans').select('*').order('price', { ascending: true });
       setPlanos(data || []);
+      setDeleteConfirmation(null);
     } catch (error) {
-      console.error('Erro ao excluir plano:', JSON.stringify(error, null, 2));
+      console.error('Erro ao processar exclusão/desativação do plano:', JSON.stringify(error, null, 2));
     }
   };
 
@@ -230,6 +248,29 @@ export default function PlanosModule() {
                   <button type="submit" className="flex-1 py-4 bg-indigo-500 hover:bg-indigo-600 text-white font-bold rounded-2xl transition-all shadow-lg shadow-indigo-500/20">Salvar Plano</button>
                 </div>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {deleteConfirmation && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              onClick={() => setDeleteConfirmation(null)}
+              className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0, y: 20 }} animate={{ scale: 1, opacity: 1, y: 0 }} exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              className="relative bg-zinc-900 border border-zinc-800 rounded-3xl p-8 w-full max-w-sm shadow-2xl"
+            >
+              <h3 className="text-xl font-bold mb-4">Confirmar Exclusão</h3>
+              <p className="text-zinc-400 mb-6">Tem certeza que deseja excluir este plano? Se ele estiver ativo, será desativado. Se já estiver desativado, será excluído permanentemente.</p>
+              <div className="flex gap-3">
+                <button onClick={() => setDeleteConfirmation(null)} className="flex-1 py-3 bg-zinc-800 hover:bg-zinc-700 text-white font-bold rounded-xl transition-all">Cancelar</button>
+                <button onClick={confirmDelete} className="flex-1 py-3 bg-red-500 hover:bg-red-600 text-white font-bold rounded-xl transition-all">Excluir</button>
+              </div>
             </motion.div>
           </div>
         )}

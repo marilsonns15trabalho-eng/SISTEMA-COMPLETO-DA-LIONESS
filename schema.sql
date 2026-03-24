@@ -93,12 +93,8 @@ CREATE TABLE IF NOT EXISTS avaliacoes (
     -- Dobras Cutâneas
     tricipital NUMERIC,
     subescapular NUMERIC,
-    peitoral NUMERIC,
-    axilar_media NUMERIC,
     supra_iliaca NUMERIC,
     abdominal NUMERIC,
-    coxa NUMERIC,
-    panturrilha NUMERIC,
 
     -- Dados de Saúde
     pressao_arterial_sistolica NUMERIC,
